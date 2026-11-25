@@ -172,13 +172,13 @@ class MainActivity : ComponentActivity() {
         loginStatus = centered("در حال آماده‌سازی موتور اتصال…", 14, muted)
         put(login, loginStatus, 18)
         put(login, centered("اختصاصی مشتریان دلتا", 13, muted), 24)
-        put(login, centered("نسخه آزمایشی ۱.۲.۰", 12, muted), 8)
+        put(login, centered("نسخه آزمایشی ۱.۳.۰", 12, muted), 8)
 
         put(dashboard, centered("DELTA VPN", 25, fg, true), 4)
         val quota = column().apply {
             background = shape(panel, 18); setPadding(dp(16),dp(15),dp(16),dp(15))
         }
-        put(quota, centered("اطلاعات اشتراک دلتا", 14, muted))
+        put(quota, centered("حجم اسمی پلن · مصرف مستقل محاسبه نمی‌شود", 14, muted))
         usageText = centered("—", 25, fg, true).apply { textDirection = View.TEXT_DIRECTION_LTR }
         put(quota, usageText, 8)
         usageBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -221,7 +221,7 @@ class MainActivity : ComponentActivity() {
         actions.addView(refreshButton, LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd = dp(8) })
         actions.addView(clearButton, LinearLayout.LayoutParams(0,dp(50),1f))
         put(dashboard, actions, 16)
-        put(dashboard, centered("نسخه ۱.۲.۰ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
+        put(dashboard, centered("نسخه ۱.۳.۰ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
         ContextCompat.registerReceiver(this, receiver, IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY), ContextCompat.RECEIVER_NOT_EXPORTED)
         render("در حال آماده‌سازی موتور اتصال…")
         lifecycleScope.launch {
@@ -291,7 +291,7 @@ class MainActivity : ComponentActivity() {
         background = shape(color); minHeight = dp(50); setOnClickListener { action() }
     }
     private fun render(message: String? = null) {
-        val hasSub = running || (account != null && repo.url != null && repo.servers.isNotEmpty())
+        val hasSub = running || account != null
         login.visibility = if (hasSub) View.GONE else View.VISIBLE
         dashboard.visibility = if (hasSub) View.VISIBLE else View.GONE
         message?.let { status.text = it; loginStatus.text = it }
@@ -308,19 +308,9 @@ class MainActivity : ComponentActivity() {
         pingButton.isEnabled = editable && hasSub && account != null
         pingButton.text = if (pingRequest != null) "در حال تست…" else "تست پینگ"
 
-        val usage = repo.usage
-        if (usage != null && usage.total > 0) {
-            val used = usage.upload.toDouble() + usage.download.toDouble()
-            val remaining = (usage.total.toDouble() - used).coerceAtLeast(0.0).toLong()
-            usageText.text = "${gb(remaining)} GB / ${gb(usage.total)} GB"
-            usageBar.visibility = View.VISIBLE
-            usageBar.progress = (1000 * remaining.toDouble() / usage.total).toInt().coerceIn(0,1000)
-        } else {
-            usageText.text = "حجم اعلام نشده"
-            usageBar.visibility = View.GONE
-        }
-        val upstreamExpires = usage?.expire ?: 0
-        val expires = account?.let { if (upstreamExpires > 0) minOf(upstreamExpires, it.expires) else it.expires } ?: upstreamExpires
+        usageText.text = account?.let { "${it.gb} GB" } ?: "—"
+        usageBar.visibility = View.GONE
+        val expires = account?.expires ?: 0
         val now = System.currentTimeMillis() / 1000
         expiry.text = when {
             expires <= 0 -> "اعتبار: اعلام نشده"
@@ -363,14 +353,8 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun checkedImport(a: DeltaAccount) {
-        // The upstream account must independently enforce traffic and expiry.
-        repo.refresh(a.subscription)
-        val u = repo.usage ?: error("اطلاعات حجم اشتراک در پنل موجود نیست.")
-        check(u.total > 0 && u.total <= a.gb.toLong() * 1073741824L &&
-            u.expire > System.currentTimeMillis()/1000 && u.expire <= a.expires) {
-            "حجم یا تاریخ اشتراک پنل با حساب سازگار نیست؛ با پشتیبانی تماس بگیرید."
-        }
-        check(u.upload.toDouble()+u.download.toDouble() < u.total.toDouble()) { "حجم اشتراک به پایان رسیده است." }
+        check(a.expires > System.currentTimeMillis()/1000)
+        repo.refresh(a.configs)
     }
     private fun signIn() {
         if (!ready || !stateKnown || busy || running || transitioning) return
@@ -386,7 +370,7 @@ class MainActivity : ComponentActivity() {
                 try { checkedImport(a); a } catch (e: Exception) { repo.clear(); runCatching { accountApi.logout(a.token) }; throw e }
             } }
             busy = false
-            result.onSuccess { account = it; delays.clear(); input.text.clear(); render("به دلتا خوش آمدید") }
+            result.onSuccess { account = it; delays.clear(); input.text.clear(); render(if (repo.servers.isEmpty()) "هنوز سرور مشترکی ثبت نشده است." else "به دلتا خوش آمدید") }
                 .onFailure { account = null; render("ورود یا دریافت اشتراک ناموفق بود؛ حساب و تنظیمات سرور را بررسی کنید.") }
         }
     }
@@ -402,8 +386,8 @@ class MainActivity : ComponentActivity() {
             } }
             busy = false
             result.onSuccess {
-                account = it; delays.clear(); render("اعتبار حساب تأیید شد.")
-                if (connectAfter) {
+                account = it; delays.clear(); render(if (repo.servers.isEmpty()) "هنوز سرور مشترکی ثبت نشده است." else "اعتبار حساب تأیید شد.")
+                if (connectAfter && repo.canConnect()) {
                     val request = VpnService.prepare(this@MainActivity)
                     if (request == null) startTunnel() else permission.launch(request)
                 }
@@ -429,7 +413,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun startTunnel() {
-        if (account == null || !repo.canConnect()) return
+        if (account == null || (account?.expires ?: 0) <= System.currentTimeMillis()/1000 || !repo.canConnect()) return
         MmkvManager.encodeSettings(AppConfig.PREF_MODE, AppConfig.VPN)
         transitioning = true; render("در حال اتصال…")
         if (!LauncherManager.startServiceFromToggle(this)) {

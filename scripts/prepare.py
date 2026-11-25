@@ -37,8 +37,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 5'),
-    ('versionName = "2.3.15"', 'versionName = "1.2.0"'),
+    ('versionCode = 755', 'versionCode = 6'),
+    ('versionName = "2.3.15"', 'versionName = "1.3.0"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
