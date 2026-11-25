@@ -1,0 +1,64 @@
+name: Delta VPN Android
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get pinned upstream source
+        uses: actions/checkout@v4
+        with:
+          repository: 2dust/v2rayNG
+          ref: 57907cf354d9769200ed4717b4430d605abe0952
+          path: upstream
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          cmdline-tools-version: '14742923'
+          packages: 'platforms;android-37.0 build-tools;37.0.0 platform-tools'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Native tunnel
+        working-directory: upstream
+        run: |
+          sdkmanager --install 'ndk;30.0.16248370'
+          export NDK_HOME="$ANDROID_HOME/ndk/30.0.16248370"
+          bash compile-hevtun.sh
+          cp -r libs V2rayNG/app/
+      - name: Xray native library
+        working-directory: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(git -C AndroidLibXrayLite describe --tags --abbrev=0)
+          mkdir -p V2rayNG/app/libs
+          gh release download "$tag" -R 2dust/AndroidLibXrayLite -p libv2ray.aar -D V2rayNG/app/libs
+      - name: Apply Delta overlay
+        run: python3 scripts/prepare.py upstream
+      - name: Compile debug APK
+        working-directory: upstream/V2rayNG
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleFdroidDebug
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          find app/build/outputs/apk/fdroid/debug -name '*universal*.apk' -exec cp {} "$GITHUB_WORKSPACE/output/DeltaVPN-1.0.0-test.apk" \;
+          test -s "$GITHUB_WORKSPACE/output/DeltaVPN-1.0.0-test.apk"
+      - name: Archive corresponding source
+        run: |
+          tar --exclude=.git --exclude=.gradle --exclude=build --exclude=local.properties -czf output/DeltaVPN-source.tar.gz -C upstream .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeltaVPN-1.0.0-test
+          path: output/
+          if-no-files-found: error
