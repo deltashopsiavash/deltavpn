@@ -11,7 +11,7 @@ src = app / "src/main/java/com/v2ray/ang"
 for name in ("SubscriptionPolicy.kt", "DeltaSubscriptions.kt", "DeltaAccountApi.kt"):
     shutil.copy2(overlay / name, src / "delta" / name)
 shutil.copy2(overlay / "MainActivity.kt", src / "ui/main/MainActivity.kt")
-endpoint = os.environ.get("DELTA_APP_API_URL", "").strip()
+endpoint = os.environ.get("DELTA_APP_API_URL", "").strip() or "https://bot.deltajanebishop.ir/deltabotvps/delta_app_api.php"
 if endpoint:
     u = urlsplit(endpoint)
     assert u.scheme == "https" and u.hostname and not u.username and not u.password and not u.query and not u.fragment and u.path.endswith("/delta_app_api.php")
