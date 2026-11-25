@@ -5,6 +5,8 @@ import android.util.Base64
 import com.google.gson.JsonParser
 import com.v2ray.ang.handler.AngConfigManager
 import com.v2ray.ang.handler.MmkvManager
+import com.v2ray.ang.handler.SubscriptionInfoParser
+import com.v2ray.ang.dto.entities.SubscriptionUsageInfo
 import com.v2ray.ang.dto.entities.SubscriptionItem
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -26,12 +28,16 @@ class DeltaSubscriptions(context: Context) {
     val group = "delta-primary"
     val servers: List<String> get() = MmkvManager.decodeServerList(group)
 
+    val usage: SubscriptionUsageInfo? get() = MmkvManager.decodeSubscription(group)?.usageInfo
+
     fun refresh(value: String): Int {
         val source = value.trim()
         require(SubscriptionPolicy.accepts(source)) { "فقط لینک اشتراک معتبر دلتا پذیرفته می‌شود." }
         val request = Request.Builder().url(source).header("User-Agent", "v2rayNG/2.3.15").header("Accept", "*/*").header("Connection", "close").get().build()
+        var usageInfo: SubscriptionUsageInfo? = null
         val data = client.newCall(request).execute().use { response ->
             check(response.isSuccessful) { "دریافت اشتراک ناموفق بود (HTTP ${response.code})." }
+            usageInfo = SubscriptionInfoParser.parse(response.header("Subscription-Userinfo"), null, null, null)
             val body = response.body ?: error("اشتراک خالی است.")
             val input = body.byteStream()
             val out = java.io.ByteArrayOutputStream()
@@ -78,7 +84,7 @@ class DeltaSubscriptions(context: Context) {
                 else -> "فرمت پاسخ اشتراک قابل شناسایی نیست؛ لینک را در v2rayNG بررسی کنید."
             }
         }
-        MmkvManager.encodeSubscription(group, SubscriptionItem(remarks = "Delta VPN", url = source))
+        MmkvManager.encodeSubscription(group, SubscriptionItem(remarks = "Delta VPN", url = source, lastUpdated = System.currentTimeMillis(), usageInfo = usageInfo))
         check(prefs.edit().putString("subscription_url", source).commit()) { "ذخیره اشتراک ناموفق بود." }
         if (MmkvManager.getSelectServer() !in servers) MmkvManager.setSelectServer(servers.first())
         return count
