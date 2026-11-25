@@ -331,7 +331,13 @@ class MainActivity : ComponentActivity() {
             val profile = MmkvManager.decodeServerConfig(id) ?: return@forEach
             val chosen = selected == id
             val latency = delays[id]
-            val color = when { latency == null -> muted; latency <= 0 -> red; latency < 150 -> green; latency < 350 -> yellow; else red }
+            val color: Int = when {
+                latency == null -> muted
+                latency <= 0 -> red
+                latency < 150 -> green
+                latency < 350 -> yellow
+                else -> red
+            }
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; layoutDirection = View.LAYOUT_DIRECTION_LTR
                 gravity = Gravity.CENTER_VERTICAL
