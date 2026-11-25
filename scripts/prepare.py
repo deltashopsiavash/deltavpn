@@ -32,13 +32,21 @@ code = code.replace(anchor, anchor + """
     }
 """, 1)
 manager.write_text(code)
+# Acknowledge ordered state registration only when the daemon actually handles it.
+service_manager = src / "core/CoreServiceManager.kt"
+state_code = service_manager.read_text()
+state_anchor = "AppConfig.MSG_REGISTER_CLIENT -> {"
+assert state_code.count(state_anchor) == 1
+state_code = state_code.replace(state_anchor, state_anchor + "\n                    if (isOrderedBroadcast) resultCode = Activity.RESULT_OK", 1)
+service_manager.write_text(state_code)
+
 
 gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 7'),
-    ('versionName = "2.3.15"', 'versionName = "1.3.1"'),
+    ('versionCode = 755', 'versionCode = 8'),
+    ('versionName = "2.3.15"', 'versionName = "1.3.2"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old

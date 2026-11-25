@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
     private var account: DeltaAccount? = null
     private val accountApi = DeltaAccountApi()
     private var stateKnown = false
+    private var stateQueryGeneration = 0
     private lateinit var loginStatus: TextView
     private lateinit var usageText: TextView
     private lateinit var expiry: TextView
@@ -96,15 +97,15 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 AppConfig.MSG_STATE_RUNNING, AppConfig.MSG_STATE_START_SUCCESS -> {
-                    stateKnown = true; running = true; transitioning = false; timer.removeCallbacks(timeout)
+                    stateQueryGeneration++; stateKnown = true; running = true; transitioning = false; timer.removeCallbacks(timeout)
                     render("تونل VPN فعال است")
                 }
                 AppConfig.MSG_STATE_NOT_RUNNING, AppConfig.MSG_STATE_STOP_SUCCESS -> {
-                    stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
-                    render("قطع اتصال")
+                    stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
+                    render(if (account == null) "نام کاربری و رمز عبور را وارد کنید." else "قطع اتصال")
                 }
                 AppConfig.MSG_STATE_START_FAILURE -> {
-                    stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
+                    stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
                     render("اتصال ناموفق بود؛ سرور دیگری را امتحان کنید.")
                 }
             }
@@ -172,7 +173,7 @@ class MainActivity : ComponentActivity() {
         loginStatus = centered("در حال آماده‌سازی موتور اتصال…", 14, muted)
         put(login, loginStatus, 18)
         put(login, centered("اختصاصی مشتریان دلتا", 13, muted), 24)
-        put(login, centered("نسخه آزمایشی ۱.۳.۱", 12, muted), 8)
+        put(login, centered("نسخه آزمایشی ۱.۳.۲", 12, muted), 8)
 
         put(dashboard, centered("DELTA VPN", 25, fg, true), 4)
         val quota = column().apply {
@@ -221,7 +222,7 @@ class MainActivity : ComponentActivity() {
         actions.addView(refreshButton, LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd = dp(8) })
         actions.addView(clearButton, LinearLayout.LayoutParams(0,dp(50),1f))
         put(dashboard, actions, 16)
-        put(dashboard, centered("نسخه ۱.۳.۱ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
+        put(dashboard, centered("نسخه ۱.۳.۲ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
         ContextCompat.registerReceiver(this, receiver, IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY), ContextCompat.RECEIVER_NOT_EXPORTED)
         render("در حال آماده‌سازی موتور اتصال…")
         lifecycleScope.launch {
@@ -244,7 +245,25 @@ class MainActivity : ComponentActivity() {
         unregisterReceiver(receiver); super.onDestroy()
     }
     private fun queryState() {
-        MessageHelper.sendMsg2Service(this, AppConfig.MSG_REGISTER_CLIENT, "")
+        val generation = ++stateQueryGeneration
+        // With the daemon stopped there is no dynamic receiver to answer a normal broadcast.
+        // The ordered broadcast reports this explicitly instead of waiting indefinitely.
+        MessageHelper.sendMsg2ServiceForResult(this, AppConfig.MSG_REGISTER_CLIENT, "") { handled ->
+            if (isFinishing || isDestroyed || generation != stateQueryGeneration) return@sendMsg2ServiceForResult
+            if (!handled) {
+                stateKnown = true
+                running = false
+                transitioning = false
+                timer.removeCallbacks(timeout)
+                render(if (busy) null else if (account == null) "نام کاربری و رمز عبور را وارد کنید." else "برای اتصال لمس کنید")
+            } else if (!stateKnown) {
+                timer.postDelayed({
+                    if (!isFinishing && !isDestroyed && generation == stateQueryGeneration && !stateKnown) {
+                        render("وضعیت سرویس نامشخص است؛ یک بار دوباره تلاش کنید.")
+                    }
+                }, 3000)
+            }
+        }
     }
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
     private fun shape(color: Int, radius: Int = 14, stroke: Int? = null) = GradientDrawable().apply {
@@ -302,7 +321,8 @@ class MainActivity : ComponentActivity() {
         connect.alpha = if (connect.isEnabled) 1f else 0.55f
         status.setTextColor(if (running) green else muted)
         val editable = ready && stateKnown && !busy && !transitioning && !running && pingRequest == null
-        importButton.isEnabled = editable; input.isEnabled = editable; password.isEnabled = editable
+        val loginEditable = !busy && !running && !transitioning
+        importButton.isEnabled = loginEditable; input.isEnabled = loginEditable; password.isEnabled = loginEditable
         refreshButton.isEnabled = editable && account != null
         clearButton.isEnabled = editable && account != null
         pingButton.isEnabled = editable && hasSub && account != null
@@ -357,7 +377,9 @@ class MainActivity : ComponentActivity() {
         repo.refresh(a.configs)
     }
     private fun signIn() {
-        if (!ready || !stateKnown || busy || running || transitioning) return
+        if (busy || running || transitioning) return
+        if (!ready) { render("موتور اتصال هنوز آماده نیست؛ دوباره تلاش کنید."); return }
+        if (!stateKnown) { render("در حال بررسی وضعیت سرویس…"); queryState(); return }
         val name = input.text.toString().trim()
         val secret = password.text.toString()
         if (name.isBlank() || secret.isBlank()) { render("نام کاربری و رمز عبور را وارد کنید."); return }

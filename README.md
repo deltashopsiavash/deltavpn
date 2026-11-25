@@ -36,3 +36,6 @@ The mother bot fetches and extracts manually entered subscription URLs; every ac
 
 ## 1.3.1
 Shared catalog accepts complete Xray JSON profiles and raw WireGuard configurations as well as share links. Mixed formats append to a single catalog, using the pinned upstream parsers. Backend 1.3.1 reports safe extraction errors; no raw source response or credentials are displayed. Test on a real device before public release.
+
+## 1.3.2
+Login controls no longer wait indefinitely for a stopped VPN daemon. Ordered registration acknowledges a running daemon, and a missing receiver resolves to disconnected. Inputs can be edited while initializing; login checks service state before importing. Verify cold launch and login on device. The backend plan picker generates demo credentials automatically.
