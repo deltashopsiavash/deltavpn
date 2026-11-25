@@ -1,7 +1,8 @@
 package com.v2ray.ang.ui.main
 
 import android.content.BroadcastReceiver
-import android.content.ClipboardManager
+import com.v2ray.ang.delta.DeltaAccountApi
+import com.v2ray.ang.delta.DeltaAccount
 import android.graphics.drawable.Drawable
 import android.content.res.ColorStateList
 import androidx.core.view.ViewCompat
@@ -44,7 +45,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var connect: ImageButton
     private lateinit var login: LinearLayout
     private lateinit var dashboard: LinearLayout
-    private lateinit var paste: Button
+    private lateinit var password: EditText
+    private var account: DeltaAccount? = null
+    private val accountApi = DeltaAccountApi()
+    private var stateKnown = false
     private lateinit var loginStatus: TextView
     private lateinit var usageText: TextView
     private lateinit var expiry: TextView
@@ -92,15 +96,15 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 AppConfig.MSG_STATE_RUNNING, AppConfig.MSG_STATE_START_SUCCESS -> {
-                    running = true; transitioning = false; timer.removeCallbacks(timeout)
+                    stateKnown = true; running = true; transitioning = false; timer.removeCallbacks(timeout)
                     render("تونل VPN فعال است")
                 }
                 AppConfig.MSG_STATE_NOT_RUNNING, AppConfig.MSG_STATE_STOP_SUCCESS -> {
-                    running = false; transitioning = false; timer.removeCallbacks(timeout)
+                    stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
                     render("قطع اتصال")
                 }
                 AppConfig.MSG_STATE_START_FAILURE -> {
-                    running = false; transitioning = false; timer.removeCallbacks(timeout)
+                    stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
                     render("اتصال ناموفق بود؛ سرور دیگری را امتحان کنید.")
                 }
             }
@@ -145,29 +149,30 @@ class MainActivity : ComponentActivity() {
         put(login, logo, 38, dp(88), dp(88), Gravity.CENTER_HORIZONTAL)
         put(login, centered("DELTA VPN", 29, fg, true), 12)
         put(login, centered("به دلتا خوش آمدید", 15, muted), 18)
-        put(login, centered("لینک اشتراک خود را وارد کنید", 16, fg), 36)
+        put(login, centered("با نام کاربری و رمز عبور وارد شوید", 16, fg), 36)
         input = EditText(this).apply {
-            hint = "https://.../sub/..."
+            hint = "نام کاربری"
             setHintTextColor(muted); setTextColor(fg)
-            setSingleLine(true); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine(true); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_NORMAL
             textDirection = View.TEXT_DIRECTION_LTR; layoutDirection = View.LAYOUT_DIRECTION_LTR
             isSaveEnabled = false
             setPadding(dp(15),dp(16),dp(15),dp(16)); background = shape(panel, 14, Color.parseColor("#394A64"))
         }
         put(login, input, 14)
-        paste = button("چسباندن لینک اشتراک", panel) {
-            val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val text = clip.primaryClip?.let { if (it.itemCount > 0) it.getItemAt(0).text else null }
-            if (text.isNullOrBlank()) loginStatus.text = "کلیپ‌بورد خالی است."
-            else input.setText(text.toString().trim())
+        password = EditText(this).apply {
+            hint = "رمز عبور"; setHintTextColor(muted); setTextColor(fg)
+            setSingleLine(true); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            textDirection = View.TEXT_DIRECTION_LTR; layoutDirection = View.LAYOUT_DIRECTION_LTR
+            isSaveEnabled = false
+            setPadding(dp(15),dp(16),dp(15),dp(16)); background = shape(panel,14,Color.parseColor("#394A64"))
         }
-        put(login, paste, 12)
-        importButton = button("افزودن اشتراک") { load(input.text.toString()) }
+        put(login, password, 12)
+        importButton = button("ورود به حساب") { signIn() }
         put(login, importButton, 12)
         loginStatus = centered("در حال آماده‌سازی موتور اتصال…", 14, muted)
         put(login, loginStatus, 18)
         put(login, centered("اختصاصی مشتریان دلتا", 13, muted), 24)
-        put(login, centered("نسخه آزمایشی ۱.۱.۱", 12, muted), 8)
+        put(login, centered("نسخه آزمایشی ۱.۲.۰", 12, muted), 8)
 
         put(dashboard, centered("DELTA VPN", 25, fg, true), 4)
         val quota = column().apply {
@@ -211,22 +216,18 @@ class MainActivity : ComponentActivity() {
         put(dashboard, servers, 10)
 
         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        refreshButton = button("به‌روزرسانی", panel) { repo.url?.let { load(it) } }
-        clearButton = button("حذف اشتراک", panel) {
-            android.app.AlertDialog.Builder(this).setMessage("اشتراک و سرورهای ذخیره‌شده حذف شوند؟")
-                .setPositiveButton("حذف") { _, _ -> repo.clear(); delays.clear(); input.text.clear(); render("اشتراک حذف شد.") }
-                .setNegativeButton("انصراف", null).show()
-        }
+        refreshButton = button("به‌روزرسانی", panel) { validateAccount(false) }
+        clearButton = button("خروج از حساب", panel) { signOut() }
         actions.addView(refreshButton, LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd = dp(8) })
         actions.addView(clearButton, LinearLayout.LayoutParams(0,dp(50),1f))
         put(dashboard, actions, 16)
-        put(dashboard, centered("نسخه ۱.۱.۱ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
+        put(dashboard, centered("نسخه ۱.۲.۰ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
         ContextCompat.registerReceiver(this, receiver, IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY), ContextCompat.RECEIVER_NOT_EXPORTED)
         render("در حال آماده‌سازی موتور اتصال…")
         lifecycleScope.launch {
             try {
                 withContext(Dispatchers.IO) { SettingsManager.initAssets(this@MainActivity, assets) }
-                ready = true; render(if (repo.url == null) "لینک اشتراک دلتا را وارد کنید." else "برای اتصال لمس کنید"); queryState()
+                ready = true; render("در انتظار بررسی وضعیت اتصال…"); queryState()
             } catch (_: Exception) { render("آماده‌سازی موتور اتصال ناموفق بود.") }
         }
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
@@ -290,21 +291,21 @@ class MainActivity : ComponentActivity() {
         background = shape(color); minHeight = dp(50); setOnClickListener { action() }
     }
     private fun render(message: String? = null) {
-        val hasSub = repo.url != null && repo.servers.isNotEmpty()
+        val hasSub = running || (account != null && repo.url != null && repo.servers.isNotEmpty())
         login.visibility = if (hasSub) View.GONE else View.VISIBLE
         dashboard.visibility = if (hasSub) View.VISIBLE else View.GONE
         message?.let { status.text = it; loginStatus.text = it }
         if (running && !transitioning && message == null) status.text = "تونل VPN فعال است"
         connect.background = powerBackground(running)
         connect.contentDescription = if (running) "قطع اتصال" else "اتصال"
-        connect.isEnabled = ready && !busy && !transitioning && pingRequest == null && (running || repo.canConnect())
+        connect.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest == null && (running || (account != null && repo.canConnect()))
         connect.alpha = if (connect.isEnabled) 1f else 0.55f
         status.setTextColor(if (running) green else muted)
-        val editable = ready && !busy && !transitioning && !running && pingRequest == null
-        importButton.isEnabled = editable; input.isEnabled = editable; paste.isEnabled = editable
-        refreshButton.isEnabled = editable && repo.url != null
-        clearButton.isEnabled = editable && repo.url != null
-        pingButton.isEnabled = editable && hasSub
+        val editable = ready && stateKnown && !busy && !transitioning && !running && pingRequest == null
+        importButton.isEnabled = editable; input.isEnabled = editable; password.isEnabled = editable
+        refreshButton.isEnabled = editable && account != null
+        clearButton.isEnabled = editable && account != null
+        pingButton.isEnabled = editable && hasSub && account != null
         pingButton.text = if (pingRequest != null) "در حال تست…" else "تست پینگ"
 
         val usage = repo.usage
@@ -318,7 +319,8 @@ class MainActivity : ComponentActivity() {
             usageText.text = "حجم اعلام نشده"
             usageBar.visibility = View.GONE
         }
-        val expires = usage?.expire ?: 0
+        val upstreamExpires = usage?.expire ?: 0
+        val expires = account?.let { if (upstreamExpires > 0) minOf(upstreamExpires, it.expires) else it.expires } ?: upstreamExpires
         val now = System.currentTimeMillis() / 1000
         expiry.text = when {
             expires <= 0 -> "اعتبار: اعلام نشده"
@@ -360,32 +362,74 @@ class MainActivity : ComponentActivity() {
             put(servers,row,8)
         }
     }
-    private fun load(value: String) {
-        if (busy || running || transitioning || pingRequest != null) return
-        busy = true; render("در حال دریافت اشتراک…")
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching { repo.refresh(value) } }
-            busy = false
-            result.onSuccess { delays.clear(); input.text.clear(); render("$it سرور دریافت شد.") }
-                .onFailure { e ->
-                    // Only show controlled errors; network exceptions can contain the secret URL.
-                    render(if (e is IllegalArgumentException || e is IllegalStateException)
-                        e.message?.takeIf { it.any { ch -> ch in '\u0600'..'\u06ff' } } ?: "دریافت اشتراک ناموفق بود."
-                    else "ارتباط با پنل برقرار نشد؛ اینترنت و لینک را بررسی کنید.")
-                }
+    private fun checkedImport(a: DeltaAccount) {
+        // The upstream account must independently enforce traffic and expiry.
+        repo.refresh(a.subscription)
+        val u = repo.usage ?: error("اطلاعات حجم اشتراک در پنل موجود نیست.")
+        check(u.total > 0 && u.total <= a.gb.toLong() * 1073741824L &&
+            u.expire > System.currentTimeMillis()/1000 && u.expire <= a.expires) {
+            "حجم یا تاریخ اشتراک پنل با حساب سازگار نیست؛ با پشتیبانی تماس بگیرید."
         }
+        check(u.upload.toDouble()+u.download.toDouble() < u.total.toDouble()) { "حجم اشتراک به پایان رسیده است." }
+    }
+    private fun signIn() {
+        if (!ready || !stateKnown || busy || running || transitioning) return
+        val name = input.text.toString().trim()
+        val secret = password.text.toString()
+        if (name.isBlank() || secret.isBlank()) { render("نام کاربری و رمز عبور را وارد کنید."); return }
+        password.text.clear()
+        busy = true; render("در حال ورود…")
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                repo.clear()
+                val a = accountApi.login(name, secret)
+                try { checkedImport(a); a } catch (e: Exception) { repo.clear(); runCatching { accountApi.logout(a.token) }; throw e }
+            } }
+            busy = false
+            result.onSuccess { account = it; delays.clear(); input.text.clear(); render("به دلتا خوش آمدید") }
+                .onFailure { account = null; render("ورود یا دریافت اشتراک ناموفق بود؛ حساب و تنظیمات سرور را بررسی کنید.") }
+        }
+    }
+    private fun validateAccount(connectAfter: Boolean) {
+        val previous = account ?: return
+        if (busy || running || transitioning || pingRequest != null) return
+        busy = true; render("در حال بررسی اعتبار حساب…")
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                val updated = accountApi.session(previous.token)
+                checkedImport(updated)
+                updated
+            } }
+            busy = false
+            result.onSuccess {
+                account = it; delays.clear(); render("اعتبار حساب تأیید شد.")
+                if (connectAfter) {
+                    val request = VpnService.prepare(this@MainActivity)
+                    if (request == null) startTunnel() else permission.launch(request)
+                }
+            }.onFailure {
+                account = null; repo.clear(); delays.clear()
+                render("اعتبار حساب یا اتصال به سرور تأیید نشد؛ دوباره وارد شوید.")
+            }
+        }
+    }
+    private fun signOut() {
+        if (busy || running || transitioning || pingRequest != null) return
+        val previous = account
+        account = null; repo.clear(); delays.clear(); input.text.clear(); password.text.clear()
+        render("از حساب خارج شدید.")
+        if (previous != null) lifecycleScope.launch(Dispatchers.IO) { runCatching { accountApi.logout(previous.token) } }
     }
     private fun toggle() {
         if (running) {
             transitioning = true; render("در حال قطع اتصال…")
             LauncherManager.stopService(this); timer.postDelayed(timeout, 15000)
-        } else if (repo.canConnect()) {
-            val request = VpnService.prepare(this)
-            if (request == null) startTunnel() else permission.launch(request)
+        } else if (account != null && repo.canConnect()) {
+            validateAccount(true)
         }
     }
     private fun startTunnel() {
-        if (!repo.canConnect()) return
+        if (account == null || !repo.canConnect()) return
         MmkvManager.encodeSettings(AppConfig.PREF_MODE, AppConfig.VPN)
         transitioning = true; render("در حال اتصال…")
         if (!LauncherManager.startServiceFromToggle(this)) {

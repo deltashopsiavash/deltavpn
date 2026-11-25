@@ -1,5 +1,6 @@
 from pathlib import Path
-import shutil, re, sys
+import shutil, re, sys, os, json
+from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
 
 root = Path(sys.argv[1]).resolve()
@@ -7,9 +8,17 @@ overlay = Path(__file__).resolve().parents[1] / "delta"
 app = root / "V2rayNG/app"
 src = app / "src/main/java/com/v2ray/ang"
 (src / "delta").mkdir(exist_ok=True)
-for name in ("SubscriptionPolicy.kt", "DeltaSubscriptions.kt"):
+for name in ("SubscriptionPolicy.kt", "DeltaSubscriptions.kt", "DeltaAccountApi.kt"):
     shutil.copy2(overlay / name, src / "delta" / name)
 shutil.copy2(overlay / "MainActivity.kt", src / "ui/main/MainActivity.kt")
+endpoint = os.environ.get("DELTA_APP_API_URL", "").strip()
+if endpoint:
+    u = urlsplit(endpoint)
+    assert u.scheme == "https" and u.hostname and not u.username and not u.password and not u.query and not u.fragment and u.path.endswith("/delta_app_api.php")
+    assert "$" not in endpoint and all(ord(c) >= 32 for c in endpoint)
+(src / "delta" / "DeltaEndpoint.kt").write_text("package com.v2ray.ang.delta\nobject DeltaEndpoint { const val URL = " + json.dumps(endpoint) + " }\n")
+if not endpoint:
+    print("WARNING: DELTA_APP_API_URL is unset; login disabled in this preview.")
 
 # Reuse the same upstream parsers as v2rayNG without enabling nested URL imports.
 manager = src / "handler/AngConfigManager.kt"
@@ -28,8 +37,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 4'),
-    ('versionName = "2.3.15"', 'versionName = "1.1.1"'),
+    ('versionCode = 755', 'versionCode = 5'),
+    ('versionName = "2.3.15"', 'versionName = "1.2.0"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
