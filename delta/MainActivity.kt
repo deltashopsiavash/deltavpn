@@ -41,7 +41,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var repo: DeltaSubscriptions
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
-    private lateinit var connect: Button
+    private lateinit var connect: ImageButton
     private lateinit var login: LinearLayout
     private lateinit var dashboard: LinearLayout
     private lateinit var paste: Button
@@ -167,7 +167,7 @@ class MainActivity : ComponentActivity() {
         loginStatus = centered("در حال آماده‌سازی موتور اتصال…", 14, muted)
         put(login, loginStatus, 18)
         put(login, centered("اختصاصی مشتریان دلتا", 13, muted), 24)
-        put(login, centered("نسخه آزمایشی ۱.۱.۰", 12, muted), 8)
+        put(login, centered("نسخه آزمایشی ۱.۱.۱", 12, muted), 8)
 
         put(dashboard, centered("DELTA VPN", 25, fg, true), 4)
         val quota = column().apply {
@@ -187,10 +187,12 @@ class MainActivity : ComponentActivity() {
         expiry = centered("اعتبار: نامشخص", 14, green)
         put(dashboard, expiry, 13)
 
-        connect = Button(this).apply {
-            text = "⏻"; textSize = 48f; setTextColor(Color.WHITE); isAllCaps = false
+        connect = ImageButton(this).apply {
+            setImageResource(com.v2ray.ang.R.drawable.delta_power)
+            scaleType = ImageView.ScaleType.CENTER
+            isFocusable = true
             contentDescription = "اتصال یا قطع اتصال"
-            setPadding(0,0,0,0); gravity = Gravity.CENTER
+            setPadding(0,0,0,0)
             stateListAnimator = null; elevation = dp(3).toFloat()
             setOnClickListener { toggle() }
         }
@@ -218,7 +220,7 @@ class MainActivity : ComponentActivity() {
         actions.addView(refreshButton, LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd = dp(8) })
         actions.addView(clearButton, LinearLayout.LayoutParams(0,dp(50),1f))
         put(dashboard, actions, 16)
-        put(dashboard, centered("نسخه ۱.۱.۰ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
+        put(dashboard, centered("نسخه ۱.۱.۱ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
         ContextCompat.registerReceiver(this, receiver, IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY), ContextCompat.RECEIVER_NOT_EXPORTED)
         render("در حال آماده‌سازی موتور اتصال…")
         lifecycleScope.launch {

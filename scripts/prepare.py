@@ -28,8 +28,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 3'),
-    ('versionName = "2.3.15"', 'versionName = "1.1.0"'),
+    ('versionCode = 755', 'versionCode = 4'),
+    ('versionName = "2.3.15"', 'versionName = "1.1.1"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
@@ -79,9 +79,6 @@ for node in (app / "src/main/res").glob("values*/strings.xml"):
     value = re.sub(r'(<string name="app_name"[^>]*>).*?(</string>)', r'\g<1>Delta VPN\g<2>', value)
     node.write_text(value)
 icon = app / "src/main/res/drawable/delta_icon.xml"
-icon.write_text("""<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
-<path android:fillColor="#101D33" android:pathData="M0,0H48V48H0Z"/>
-<path android:strokeColor="#438BFF" android:strokeWidth="3.5" android:strokeLineJoin="round" android:fillColor="#00000000" android:pathData="M24,8L40,38H8Z"/>
-<path android:fillColor="#438BFF" android:pathData="M24,19L31,32H17Z"/>
-</vector>""")
+icon.write_text((overlay / "delta_icon.xml").read_text())
+(icon.parent / "delta_power.xml").write_text((overlay / "delta_power.xml").read_text())
 print("Delta overlay applied.")
