@@ -172,7 +172,7 @@ class MainActivity : ComponentActivity() {
         loginStatus = centered("در حال آماده‌سازی موتور اتصال…", 14, muted)
         put(login, loginStatus, 18)
         put(login, centered("اختصاصی مشتریان دلتا", 13, muted), 24)
-        put(login, centered("نسخه آزمایشی ۱.۳.۰", 12, muted), 8)
+        put(login, centered("نسخه آزمایشی ۱.۳.۱", 12, muted), 8)
 
         put(dashboard, centered("DELTA VPN", 25, fg, true), 4)
         val quota = column().apply {
@@ -221,7 +221,7 @@ class MainActivity : ComponentActivity() {
         actions.addView(refreshButton, LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd = dp(8) })
         actions.addView(clearButton, LinearLayout.LayoutParams(0,dp(50),1f))
         put(dashboard, actions, 16)
-        put(dashboard, centered("نسخه ۱.۳.۰ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
+        put(dashboard, centered("نسخه ۱.۳.۱ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
         ContextCompat.registerReceiver(this, receiver, IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY), ContextCompat.RECEIVER_NOT_EXPORTED)
         render("در حال آماده‌سازی موتور اتصال…")
         lifecycleScope.launch {

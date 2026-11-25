@@ -26,9 +26,9 @@ code = manager.read_text()
 anchor = "object AngConfigManager {"
 assert anchor in code
 code = code.replace(anchor, anchor + """
-    fun importTrustedDeltaPayload(payload: String, subid: String, custom: Boolean): Int {
-        return if (custom) parseCustomConfigServer(payload, subid, false)
-        else parseBatchConfig(payload, subid, false)
+    fun importTrustedDeltaPayload(payload: String, subid: String, custom: Boolean, append: Boolean = false): Int {
+        return if (custom) parseCustomConfigServer(payload, subid, append)
+        else parseBatchConfig(payload, subid, append)
     }
 """, 1)
 manager.write_text(code)
@@ -37,8 +37,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 6'),
-    ('versionName = "2.3.15"', 'versionName = "1.3.0"'),
+    ('versionCode = 755', 'versionCode = 7'),
+    ('versionName = "2.3.15"', 'versionName = "1.3.1"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old

@@ -33,3 +33,6 @@ Username/password login replaces direct subscription import. The confirmed produ
 
 ## 1.3.0 shared catalog preview
 The mother bot fetches and extracts manually entered subscription URLs; every active account receives the same deduplicated share-link catalog. Account login and expiry remain server-checked. Plan GB is nominal only; real per-account traffic quota and revocation of already-issued shared credentials cannot be enforced without distinct upstream identities or a metering gateway. Raw source URLs are not sent to the app. Refresh after catalog changes while disconnected. No public sales. This requires the updated backend; old single-sub API clients are incompatible. Existing private stock is not automatically shared.
+
+## 1.3.1
+Shared catalog accepts complete Xray JSON profiles and raw WireGuard configurations as well as share links. Mixed formats append to a single catalog, using the pinned upstream parsers. Backend 1.3.1 reports safe extraction errors; no raw source response or credentials are displayed. Test on a real device before public release.
