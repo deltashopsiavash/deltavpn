@@ -2,7 +2,7 @@ package com.v2ray.ang.delta
 
 import android.content.Context
 import android.util.Base64
-import com.v2ray.ang.AppConfig
+import com.google.gson.JsonParser
 import com.v2ray.ang.handler.AngConfigManager
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.dto.entities.SubscriptionItem
@@ -29,7 +29,7 @@ class DeltaSubscriptions(context: Context) {
     fun refresh(value: String): Int {
         val source = value.trim()
         require(SubscriptionPolicy.accepts(source)) { "فقط لینک اشتراک معتبر دلتا پذیرفته می‌شود." }
-        val request = Request.Builder().url(source).header("User-Agent", "v2rayNG/2.3.15").get().build()
+        val request = Request.Builder().url(source).header("User-Agent", "v2rayNG/2.3.15").header("Accept", "*/*").header("Connection", "close").get().build()
         val data = client.newCall(request).execute().use { response ->
             check(response.isSuccessful) { "دریافت اشتراک ناموفق بود (HTTP ${response.code})." }
             val body = response.body ?: error("اشتراک خالی است.")
@@ -44,25 +44,58 @@ class DeltaSubscriptions(context: Context) {
             }
             out.toString("UTF-8")
         }
-        val clean = data.trim().removePrefix("\uFEFF")
-        val schemes = listOf("vless://", "vmess://", "trojan://", "ss://")
-        fun supported(text: String) = text.lineSequence().map { it.trim() }
-            .filter { line -> schemes.any { line.startsWith(it, true) } && line.length <= 65536 }
-            .distinct().take(500).toList()
-        val decoded = runCatching { String(Base64.decode(clean, Base64.DEFAULT), Charsets.UTF_8) }
-            .recoverCatching { String(Base64.decode(clean, Base64.URL_SAFE or Base64.NO_WRAP), Charsets.UTF_8) }
-            .getOrDefault("")
-        val lines = supported(clean).ifEmpty { supported(decoded) }
-        check(lines.isNotEmpty()) { "هیچ کانفیگ قابل پشتیبانی در اشتراک پیدا نشد." }
-        // Parsing and storage are handled by the pinned upstream engine.
-        // Do not pass arbitrary URLs or raw JSON into the generic importer.
-        val result = AngConfigManager.importBatchConfig(lines.joinToString("\n"), group, false)
-        check(result.first > 0 && servers.isNotEmpty()) { "کانفیگ‌های اشتراک قابل خواندن نیستند." }
+        val clean = data.trim().removePrefix("\uFEFF").trim()
+        val decoded = runCatching {
+            String(Base64.decode(clean, Base64.DEFAULT), Charsets.UTF_8)
+        }.recoverCatching {
+            String(Base64.decode(clean, Base64.URL_SAFE or Base64.NO_WRAP), Charsets.UTF_8)
+        }.getOrDefault("").trim().removePrefix("\uFEFF").trim()
+        val payloads = listOf(clean, decoded).filter { it.isNotBlank() }.distinct()
+        // Restrict to data fetched from the approved HTTPS subscription origin.
+        // Upstream supports both complete Xray JSON profiles and share-link lists.
+        // No nested subscriptions, remote redirects, or arbitrary user-supplied configs.
+        val schemes = listOf("vless://", "vmess://", "trojan://", "ss://",
+            "socks://", "socks4://", "socks5://", "wireguard://", "hysteria2://", "hy2://", "v2rayn://")
+        var count = 0
+        for (payload in payloads) {
+            val lines = payload.lineSequence().map { it.trim().removePrefix("\uFEFF") }
+                .filter { line -> schemes.any { line.startsWith(it) } && line.length <= 65536 }
+                .distinct().take(500).toList()
+            if (lines.isNotEmpty()) {
+                count = AngConfigManager.importTrustedDeltaPayload(lines.joinToString("\n"), group, false)
+            } else if (isXrayJson(payload)) {
+                count = AngConfigManager.importTrustedDeltaPayload(payload, group, true)
+            } else if (payload.startsWith("[Interface]") && payload.contains("[Peer]")) {
+                count = AngConfigManager.importTrustedDeltaPayload(payload, group, true)
+            }
+            if (count > 0) break
+        }
+        check(count > 0 && servers.isNotEmpty()) {
+            when {
+                clean.startsWith("<") -> "پنل به جای کانفیگ، صفحه HTML برگرداند."
+                clean.startsWith("{") || clean.startsWith("[") -> "پاسخ JSON پنل دریافت شد ولی کانفیگ معتبر نبود."
+                clean.isBlank() -> "پاسخ اشتراک خالی است."
+                else -> "فرمت پاسخ اشتراک قابل شناسایی نیست؛ لینک را در v2rayNG بررسی کنید."
+            }
+        }
         MmkvManager.encodeSubscription(group, SubscriptionItem(remarks = "Delta VPN", url = source))
         check(prefs.edit().putString("subscription_url", source).commit()) { "ذخیره اشتراک ناموفق بود." }
         if (MmkvManager.getSelectServer() !in servers) MmkvManager.setSelectServer(servers.first())
-        return result.first
+        return count
     }
+
+    private fun isXrayJson(payload: String): Boolean = runCatching {
+        if (!payload.startsWith("{") && !payload.startsWith("[")) return false
+        val root = JsonParser.parseString(payload)
+        val items = if (root.isJsonArray) root.asJsonArray.toList() else listOf(root)
+        items.isNotEmpty() && items.size <= 500 && items.all { item ->
+            item.isJsonObject && item.asJsonObject.let { obj ->
+                obj.get("inbounds")?.isJsonArray == true &&
+                    obj.get("outbounds")?.isJsonArray == true &&
+                    obj.get("routing")?.isJsonObject == true
+            }
+        }
+    }.getOrDefault(false)
 
     fun clear() {
         MmkvManager.removeServerViaSubid(group)

@@ -87,7 +87,7 @@ class MainActivity : ComponentActivity() {
         }
         scroll.addView(root); setContentView(scroll)
         label("DELTA VPN", 30, fg, true).apply { gravity = Gravity.CENTER; add(this) }
-        label("اختصاصی مشتریان دلتا  •  نسخه آزمایشی ۱.۰", 13, muted).apply {
+        label("اختصاصی مشتریان دلتا  •  نسخه آزمایشی ۱.۰.۱", 13, muted).apply {
             gravity = Gravity.CENTER; add(this, 8)
         }
         status = label("در حال آماده‌سازی موتور اتصال…", 16, fg).apply {

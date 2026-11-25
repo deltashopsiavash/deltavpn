@@ -11,12 +11,25 @@ for name in ("SubscriptionPolicy.kt", "DeltaSubscriptions.kt"):
     shutil.copy2(overlay / name, src / "delta" / name)
 shutil.copy2(overlay / "MainActivity.kt", src / "ui/main/MainActivity.kt")
 
+# Reuse the same upstream parsers as v2rayNG without enabling nested URL imports.
+manager = src / "handler/AngConfigManager.kt"
+code = manager.read_text()
+anchor = "object AngConfigManager {"
+assert anchor in code
+code = code.replace(anchor, anchor + """
+    fun importTrustedDeltaPayload(payload: String, subid: String, custom: Boolean): Int {
+        return if (custom) parseCustomConfigServer(payload, subid, false)
+        else parseBatchConfig(payload, subid, false)
+    }
+""", 1)
+manager.write_text(code)
+
 gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 1'),
-    ('versionName = "2.3.15"', 'versionName = "1.0.0"'),
+    ('versionCode = 755', 'versionCode = 2'),
+    ('versionName = "2.3.15"', 'versionName = "1.0.1"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
