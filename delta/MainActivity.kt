@@ -3,6 +3,8 @@ package com.v2ray.ang.ui.main
 import android.content.BroadcastReceiver
 import com.v2ray.ang.delta.DeltaAccountApi
 import com.v2ray.ang.delta.DeltaAccount
+import com.v2ray.ang.delta.DeltaApiException
+import com.v2ray.ang.delta.DeltaSessionStore
 import android.graphics.drawable.Drawable
 import android.content.res.ColorStateList
 import androidx.core.view.ViewCompat
@@ -47,6 +49,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var dashboard: LinearLayout
     private lateinit var password: EditText
     private var account: DeltaAccount? = null
+    private lateinit var sessionStore: DeltaSessionStore
+    private var restoreAttempted = false
     private val accountApi = DeltaAccountApi()
     private var stateKnown = false
     private var stateQueryGeneration = 0
@@ -98,11 +102,11 @@ class MainActivity : ComponentActivity() {
                 }
                 AppConfig.MSG_STATE_RUNNING, AppConfig.MSG_STATE_START_SUCCESS -> {
                     stateQueryGeneration++; stateKnown = true; running = true; transitioning = false; timer.removeCallbacks(timeout)
-                    render("تونل VPN فعال است")
+                    render("تونل VPN فعال است"); maybeRestore()
                 }
                 AppConfig.MSG_STATE_NOT_RUNNING, AppConfig.MSG_STATE_STOP_SUCCESS -> {
                     stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
-                    render(if (account == null) "نام کاربری و رمز عبور را وارد کنید." else "قطع اتصال")
+                    render(if (account == null) "نام کاربری و رمز عبور را وارد کنید." else "قطع اتصال"); maybeRestore()
                 }
                 AppConfig.MSG_STATE_START_FAILURE -> {
                     stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
@@ -118,6 +122,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         repo = DeltaSubscriptions(this)
+        sessionStore = DeltaSessionStore(this)
         window.statusBarColor = navy
         window.navigationBarColor = navy
         window.decorView.systemUiVisibility = 0
@@ -170,10 +175,13 @@ class MainActivity : ComponentActivity() {
         put(login, password, 12)
         importButton = button("ورود به حساب") { signIn() }
         put(login, importButton, 12)
+        put(login, button("ورود مجدد / پاک کردن نشست", panel) {
+            if (!busy && !running) { sessionStore.clear(); restoreAttempted = true; render("نام کاربری و رمز عبور را وارد کنید.") }
+        }, 8)
         loginStatus = centered("در حال آماده‌سازی موتور اتصال…", 14, muted)
         put(login, loginStatus, 18)
         put(login, centered("اختصاصی مشتریان دلتا", 13, muted), 24)
-        put(login, centered("نسخه آزمایشی ۱.۳.۲", 12, muted), 8)
+        put(login, centered("نسخه آزمایشی ۱.۳.۳", 12, muted), 8)
 
         put(dashboard, centered("DELTA VPN", 25, fg, true), 4)
         val quota = column().apply {
@@ -222,7 +230,7 @@ class MainActivity : ComponentActivity() {
         actions.addView(refreshButton, LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd = dp(8) })
         actions.addView(clearButton, LinearLayout.LayoutParams(0,dp(50),1f))
         put(dashboard, actions, 16)
-        put(dashboard, centered("نسخه ۱.۳.۲ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
+        put(dashboard, centered("نسخه ۱.۳.۳ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
         ContextCompat.registerReceiver(this, receiver, IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY), ContextCompat.RECEIVER_NOT_EXPORTED)
         render("در حال آماده‌سازی موتور اتصال…")
         lifecycleScope.launch {
@@ -231,6 +239,7 @@ class MainActivity : ComponentActivity() {
                 ready = true; render("در انتظار بررسی وضعیت اتصال…"); queryState()
             } catch (_: Exception) { render("آماده‌سازی موتور اتصال ناموفق بود.") }
         }
+        timer.post(expiryTick)
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 12)
@@ -255,7 +264,7 @@ class MainActivity : ComponentActivity() {
                 running = false
                 transitioning = false
                 timer.removeCallbacks(timeout)
-                render(if (busy) null else if (account == null) "نام کاربری و رمز عبور را وارد کنید." else "برای اتصال لمس کنید")
+                render(if (busy) null else if (account == null) "نام کاربری و رمز عبور را وارد کنید." else "برای اتصال لمس کنید"); maybeRestore()
             } else if (!stateKnown) {
                 timer.postDelayed({
                     if (!isFinishing && !isDestroyed && generation == stateQueryGeneration && !stateKnown) {
@@ -330,14 +339,7 @@ class MainActivity : ComponentActivity() {
 
         usageText.text = account?.let { "${it.gb} GB" } ?: "—"
         usageBar.visibility = View.GONE
-        val expires = account?.expires ?: 0
-        val now = System.currentTimeMillis() / 1000
-        expiry.text = when {
-            expires <= 0 -> "اعتبار: اعلام نشده"
-            expires <= now -> "اعتبار به پایان رسیده"
-            else -> "${kotlin.math.ceil((expires-now)/86400.0).toLong()} روز اعتبار باقی‌مانده"
-        }
-        expiry.setTextColor(if (expires > 0 && expires <= now) red else if (expires > 0) green else muted)
+        updateExpiry()
 
         servers.removeAllViews()
         val selected = MmkvManager.getSelectServer()
@@ -372,14 +374,59 @@ class MainActivity : ComponentActivity() {
             put(servers,row,8)
         }
     }
+    private fun updateExpiry() {
+        val a = account
+        val left = a?.remainingSeconds() ?: 0
+        expiry.text = when {
+            a == null -> "اعتبار: اعلام نشده"
+            left == 0L -> "اعتبار به پایان رسیده"
+            else -> "${left/86400} روز و ${left%86400/3600} ساعت و ${left%3600/60} دقیقه و ${left%60} ثانیه"
+        }
+        expiry.setTextColor(if (a == null) muted else if (left == 0L) red else green)
+    }
+    private val expiryTick = object : Runnable {
+        override fun run() {
+            if (isDestroyed) return
+            updateExpiry()
+            val a = account
+            if (a != null && a.remainingSeconds() == 0L) {
+                account = null; sessionStore.clear()
+                if (running || transitioning) LauncherManager.stopService(this@MainActivity) else repo.clear()
+                render("اعتبار حساب به پایان رسیده است.")
+            }
+            timer.postDelayed(this,1000)
+        }
+    }
+    private fun maybeRestore(force: Boolean = false) {
+        if (!ready || !stateKnown || busy || account != null || (restoreAttempted && !force)) return
+        restoreAttempted = true
+        val token = sessionStore.read() ?: return
+        busy = true; render("در حال ورود خودکار…")
+        val wasRunning = running
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching {
+                val a = accountApi.session(token)
+                if (!wasRunning) checkedImport(a)
+                a
+            } }
+            busy = false
+            result.onSuccess { account = it; render("به دلتا خوش آمدید") }.onFailure {
+                if (it is DeltaApiException && it.status == 401) sessionStore.clear()
+                if (running) LauncherManager.stopService(this@MainActivity)
+                else repo.clear()
+                render(if (it is DeltaApiException && it.status == 401) "نشست منقضی یا لغو شده؛ دوباره وارد شوید." else "ورود خودکار ناموفق بود؛ برای تلاش دوباره ورود را بزنید.")
+            }
+        }
+    }
     private fun checkedImport(a: DeltaAccount) {
-        check(a.expires > System.currentTimeMillis()/1000)
+        check(a.remainingSeconds() > 0)
         repo.refresh(a.configs)
     }
     private fun signIn() {
         if (busy || running || transitioning) return
         if (!ready) { render("موتور اتصال هنوز آماده نیست؛ دوباره تلاش کنید."); return }
         if (!stateKnown) { render("در حال بررسی وضعیت سرویس…"); queryState(); return }
+        if (sessionStore.read() != null && input.text.isBlank() && password.text.isBlank()) { maybeRestore(true); return }
         val name = input.text.toString().trim()
         val secret = password.text.toString()
         if (name.isBlank() || secret.isBlank()) { render("نام کاربری و رمز عبور را وارد کنید."); return }
@@ -389,7 +436,7 @@ class MainActivity : ComponentActivity() {
             val result = withContext(Dispatchers.IO) { runCatching {
                 repo.clear()
                 val a = accountApi.login(name, secret)
-                try { checkedImport(a); a } catch (e: Exception) { repo.clear(); runCatching { accountApi.logout(a.token) }; throw e }
+                try { checkedImport(a); sessionStore.save(a.token); a } catch (e: Exception) { repo.clear(); runCatching { accountApi.logout(a.token) }; throw e }
             } }
             busy = false
             result.onSuccess { account = it; delays.clear(); input.text.clear(); render(if (repo.servers.isEmpty()) "هنوز سرور مشترکی ثبت نشده است." else "به دلتا خوش آمدید") }
@@ -415,14 +462,15 @@ class MainActivity : ComponentActivity() {
                 }
             }.onFailure {
                 account = null; repo.clear(); delays.clear()
-                render("اعتبار حساب یا اتصال به سرور تأیید نشد؛ دوباره وارد شوید.")
+                if (it is DeltaApiException && it.status == 401) sessionStore.clear()
+                render("اعتبار حساب یا اتصال به سرور تأیید نشد؛ دوباره تلاش کنید.")
             }
         }
     }
     private fun signOut() {
         if (busy || running || transitioning || pingRequest != null) return
         val previous = account
-        account = null; repo.clear(); delays.clear(); input.text.clear(); password.text.clear()
+        account = null; sessionStore.clear(); repo.clear(); delays.clear(); input.text.clear(); password.text.clear()
         render("از حساب خارج شدید.")
         if (previous != null) lifecycleScope.launch(Dispatchers.IO) { runCatching { accountApi.logout(previous.token) } }
     }
@@ -435,10 +483,10 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun startTunnel() {
-        if (account == null || (account?.expires ?: 0) <= System.currentTimeMillis()/1000 || !repo.canConnect()) return
+        if (account == null || (account?.remainingSeconds() ?: 0) <= 0 || !repo.canConnect()) return
         MmkvManager.encodeSettings(AppConfig.PREF_MODE, AppConfig.VPN)
         transitioning = true; render("در حال اتصال…")
-        if (!LauncherManager.startServiceFromToggle(this)) {
+        if (!LauncherManager.startServiceFromToggle(this, account?.deadlineElapsed ?: 0L)) {
             transitioning = false; render("شروع سرویس ناموفق بود.")
         } else timer.postDelayed(timeout, 20000)
     }

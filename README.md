@@ -39,3 +39,6 @@ Shared catalog accepts complete Xray JSON profiles and raw WireGuard configurati
 
 ## 1.3.2
 Login controls no longer wait indefinitely for a stopped VPN daemon. Ordered registration acknowledges a running daemon, and a missing receiver resolves to disconnected. Inputs can be edited while initializing; login checks service state before importing. Verify cold launch and login on device. The backend plan picker generates demo credentials automatically.
+
+## 1.3.3
+Android Keystore encrypted session token; automatic authenticated restoration, no saved password. New tokens are valid through account expiry and revoked by owner reset/deletion. Server UTC timestamp anchors the local monotonic countdown; VPN service receives the deadline and stops at expiry when scheduled, including with UI closed. This is client-side expiry enforcement, not upstream credential revocation. Purchased volume only; consumed/remaining bytes unknown with shared credentials. Device and background lifecycle tests required.
