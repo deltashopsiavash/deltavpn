@@ -97,24 +97,47 @@ class MainActivity : ComponentActivity() {
         val prefs=getSharedPreferences("delta_device",Context.MODE_PRIVATE)
         return prefs.getString("id",null) ?: ByteArray(32).also{java.security.SecureRandom().nextBytes(it)}.joinToString(""){"%02x".format(it.toInt() and 255)}.also{check(prefs.edit().putString("id",it).commit())}
     }
+    private lateinit var deviceScreen:FrameLayout
+    private lateinit var deviceList:LinearLayout
+    private var deviceRequest=0
+    private fun closeDevices(){deviceRequest++;deviceScreen.visibility=View.GONE}
     private fun showDevices(revoke:Long?=null){
         val token=account?.token?:return
+        val request=++deviceRequest
+        deviceScreen.visibility=View.VISIBLE
+        deviceList.removeAllViews()
+        put(deviceList,button(tr("بازگشت","Back"),panel){closeDevices()},0)
+        put(deviceList,centered(tr("📱 دستگاه‌ها","📱 Devices"),23,fg,true),18)
+        put(deviceList,centered(tr("در حال دریافت…","Loading…"),14,muted),18)
         lifecycleScope.launch {
             val result=withContext(Dispatchers.IO){runCatching{accountApi.devices(token,revoke)}}
+            if(request!=deviceRequest||account?.token!=token)return@launch
+            deviceList.removeAllViews()
+            put(deviceList,button(tr("بازگشت","Back"),panel){closeDevices()},0)
+            put(deviceList,centered(tr("📱 دستگاه‌ها","📱 Devices"),23,fg,true),18)
             result.onSuccess{r->
-                if(account?.token!=token)return@onSuccess
                 val devices=r.getAsJsonArray("devices").map{it.asJsonObject}
                 val current=r.get("current_id").asLong
                 val limit=r.get("device_limit").asInt
-                val names=devices.map{v->
+                put(deviceList,centered(tr("دستگاه‌های ثبت‌شده: ","Registered devices: ")+devices.size+" / "+limit,16,fg),12)
+                for(v in devices){
+                    val id=v.get("id").asLong
                     val seen=java.text.DateFormat.getDateTimeInstance().format(java.util.Date(v.get("last_seen").asLong*1000))
-                    v.get("model").asString+(if(v.get("id").asLong==current)tr(" (این دستگاه)"," (This device)") else "")+"\n"+tr("آخرین فعالیت: ","Last activity: ")+seen+"\n"+tr("مصرف مستقل: نامشخص","Individual usage: unavailable")
-                }.toTypedArray()
-                AlertDialog.Builder(this@MainActivity).setTitle(tr("دستگاه‌ها","Devices")+" "+devices.size+"/"+limit).setItems(names){_,index->
-                    val id=devices[index].get("id").asLong
-                    if(id!=current)AlertDialog.Builder(this@MainActivity).setMessage(tr("نشست این دستگاه لغو شود؟","Revoke this device session?")).setPositiveButton(tr("خروج دستگاه","Revoke")){_,_->showDevices(id)}.setNegativeButton(tr("انصراف","Cancel"),null).show()
-                }.setNegativeButton(tr("بستن","Close"),null).show()
-            }.onFailure{Toast.makeText(this@MainActivity,tr("دریافت دستگاه‌ها ناموفق بود.","Could not load devices."),Toast.LENGTH_LONG).show()}
+                    val card=column().apply{background=shape(panel,16);setPadding(dp(16),dp(14),dp(16),dp(14))}
+                    put(card,label(v.get("model").asString,17,fg,true))
+                    if(id==current)put(card,label(tr("این دستگاه","This device"),13,green),6)
+                    put(card,label(tr("آخرین فعالیت: ","Last activity: ")+seen,13,muted),8)
+                    put(card,label(tr("مصرف مستقل: نامشخص","Individual usage: unavailable"),13,muted),6)
+                    if(id!=current)put(card,button(tr("خروج دستگاه","Revoke device"),Color.parseColor("#A52F42")){
+                        AlertDialog.Builder(this@MainActivity).setMessage(tr("نشست این دستگاه لغو شود؟","Revoke this device session?")).setPositiveButton(tr("خروج دستگاه","Revoke")){_,_->showDevices(id)}.setNegativeButton(tr("انصراف","Cancel"),null).show()
+                    },12)
+                    put(deviceList,card,14)
+                }
+                put(deviceList,button(tr("به‌روزرسانی","Refresh"),panel){showDevices()},16)
+            }.onFailure{
+                put(deviceList,centered(tr("دریافت دستگاه‌ها ناموفق بود.","Could not load devices."),14,muted),16)
+                put(deviceList,button(tr("تلاش مجدد","Retry")){showDevices()},12)
+            }
         }
     }
     private var powerPulse: ValueAnimator?=null
@@ -266,7 +289,7 @@ class MainActivity : ComponentActivity() {
         contacts.addView(button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd=dp(8) })
         contacts.addView(button(tr("پشتیبانی","Support"),panel){openContact("support")},LinearLayout.LayoutParams(0,dp(50),1f))
         put(login,contacts,10)
-        put(login, centered("v1.6.0", 11, muted), 20)
+        put(login, centered("v1.6.1", 11, muted), 20)
 
         val menuButton=button("☰",panel){showDrawer()}
         menuButton.contentDescription=tr("منوی حساب","Account menu")
@@ -322,7 +345,7 @@ class MainActivity : ComponentActivity() {
         servers=column();put(serverSection,servers,8)
         put(dashboard,serverSection)
         dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
-        put(dashboard, centered("v1.6.0",11,muted),16)
+        put(dashboard, centered("v1.6.1",11,muted),16)
 
         drawer=FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt());visibility=View.GONE;setOnClickListener{hideDrawer()} }
         val drawerScroll=ScrollView(this).apply { isFillViewport=true;setBackgroundColor(navy);isClickable=true }
@@ -341,11 +364,18 @@ class MainActivity : ComponentActivity() {
         put(menu,refreshButton,10)
         clearButton=button(tr("خروج از حساب","Sign out"),Color.parseColor("#A52F42")){requestSignOut()}
         put(menu,clearButton,10)
-        put(menu,centered("v1.6.0",11,muted),16)
+        put(menu,centered("v1.6.1",11,muted),16)
         shell.addView(drawer,FrameLayout.LayoutParams(-1,-1))
+        deviceScreen=FrameLayout(this).apply{setBackgroundColor(navy);visibility=View.GONE;isClickable=true}
+        val deviceScroll=ScrollView(this).apply{isFillViewport=true}
+        deviceList=column().apply{setPadding(dp(24),dp(18),dp(24),dp(24))}
+        deviceScroll.addView(deviceList)
+        deviceScreen.addView(deviceScroll,FrameLayout.LayoutParams(-1,-1))
+        shell.addView(deviceScreen,FrameLayout.LayoutParams(-1,-1))
         onBackPressedDispatcher.addCallback(this,object:OnBackPressedCallback(true){
             override fun handleOnBackPressed(){
-                if(drawer.visibility==View.VISIBLE)hideDrawer()
+                if(deviceScreen.visibility==View.VISIBLE)closeDevices()
+                else if(drawer.visibility==View.VISIBLE)hideDrawer()
                 else if(serverSection.visibility==View.VISIBLE)serverSection.visibility=View.GONE
                 else {isEnabled=false;onBackPressedDispatcher.onBackPressed();isEnabled=true}
             }
@@ -373,7 +403,7 @@ class MainActivity : ComponentActivity() {
         child.translationX=if(english)-child.width.toFloat() else child.width.toFloat()
         child.animate().translationX(0f).setDuration(220).start()
     }
-    private fun hideDrawer(){drawer.visibility=View.GONE}
+    private fun hideDrawer(){drawer.visibility=View.GONE;if(::deviceScreen.isInitialized)closeDevices()}
     private fun chooseLanguage() {
         if(busy||transitioning||pingRequest!=null){Toast.makeText(this,tr("ابتدا عملیات فعلی را تمام کنید.","Finish the current operation first."),Toast.LENGTH_SHORT).show();return}
         AlertDialog.Builder(this).setTitle(tr("انتخاب زبان","Choose language"))

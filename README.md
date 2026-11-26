@@ -60,3 +60,6 @@ Animated abstract network mesh, title and circular logo above power control, com
 
 ## 1.6.0 preview
 Device-bound app sessions and device list/revocation. Device IDs identify installations, not tamper-proof physical hardware. Individual network usage is unavailable because panel credentials remain shared within an account. No independent network revocation. Live quota/expiry from backend. License materials retained in source; account-menu button removed. Requires updated backend and device testing.
+
+## 1.6.1 preview
+Dedicated full-screen device management instead of list dialog. Network-level individual usage remains unavailable.
