@@ -57,3 +57,6 @@ Server-configured subscription refresh (default five minutes), versioned global 
 
 ## 1.5.2
 Animated abstract network mesh, title and circular logo above power control, compact ping row, no technical protocol label, version prefix, separate stale usage warning in account card, and power pulse. License notices retained via separate dialog. No backend changes; API failure root cause not diagnosed by this UI change. Device testing required.
+
+## 1.6.0 preview
+Device-bound app sessions and device list/revocation. Device IDs identify installations, not tamper-proof physical hardware. Individual network usage is unavailable because panel credentials remain shared within an account. No independent network revocation. Live quota/expiry from backend. License materials retained in source; account-menu button removed. Requires updated backend and device testing.

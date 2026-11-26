@@ -54,8 +54,8 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon assembleFdroidDebug -PABI_FILTERS=arm64-v8a
           mkdir -p "$GITHUB_WORKSPACE/output"
-          find app/build/outputs/apk/fdroid/debug -name '*arm64-v8a*.apk' -exec cp {} "$GITHUB_WORKSPACE/output/DeltaVPN-1.5.2-arm64.apk" \;
-          test -s "$GITHUB_WORKSPACE/output/DeltaVPN-1.5.2-arm64.apk"
+          find app/build/outputs/apk/fdroid/debug -name '*arm64-v8a*.apk' -exec cp {} "$GITHUB_WORKSPACE/output/DeltaVPN-1.6.0-arm64.apk" \;
+          test -s "$GITHUB_WORKSPACE/output/DeltaVPN-1.6.0-arm64.apk"
       - name: Archive corresponding source
         run: |
           tar --exclude=.git --exclude=.gradle --exclude=build --exclude=local.properties -czf output/DeltaVPN-source.tar.gz -C upstream .
@@ -64,11 +64,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="v1.5.2-arm64-test-${GITHUB_RUN_NUMBER}"
-          sha256sum output/DeltaVPN-1.5.2-arm64.apk > output/DeltaVPN-1.5.2-arm64.apk.sha256
+          tag="v1.6.0-arm64-test-${GITHUB_RUN_NUMBER}"
+          sha256sum output/DeltaVPN-1.6.0-arm64.apk > output/DeltaVPN-1.6.0-arm64.apk.sha256
           ls -lh output/
           if ! gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Delta VPN 1.5.2 ARM64 (test)" --notes "Download DeltaVPN-1.5.2-arm64.apk directly. Source archive is a separate optional download. Android debug-signed test build; real VPN connection not yet device-tested." --draft
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Delta VPN 1.6.0 ARM64 (test)" --notes "Download DeltaVPN-1.6.0-arm64.apk directly. Source archive is a separate optional download. Android debug-signed test build; real VPN connection not yet device-tested." --draft
           fi
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber output/DeltaVPN-1.5.2-arm64.apk output/DeltaVPN-1.5.2-arm64.apk.sha256 output/DeltaVPN-source.tar.gz
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber output/DeltaVPN-1.6.0-arm64.apk output/DeltaVPN-1.6.0-arm64.apk.sha256 output/DeltaVPN-source.tar.gz
           gh release edit "$tag" -R "$GITHUB_REPOSITORY" --draft=false --prerelease

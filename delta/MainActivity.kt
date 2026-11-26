@@ -93,6 +93,30 @@ class MainActivity : ComponentActivity() {
     private lateinit var usageText: TextView
     private lateinit var usageDetail: TextView
     private var usageStale=false
+    private fun deviceId():String {
+        val prefs=getSharedPreferences("delta_device",Context.MODE_PRIVATE)
+        return prefs.getString("id",null) ?: ByteArray(32).also{java.security.SecureRandom().nextBytes(it)}.joinToString(""){"%02x".format(it.toInt() and 255)}.also{check(prefs.edit().putString("id",it).commit())}
+    }
+    private fun showDevices(revoke:Long?=null){
+        val token=account?.token?:return
+        lifecycleScope.launch {
+            val result=withContext(Dispatchers.IO){runCatching{accountApi.devices(token,revoke)}}
+            result.onSuccess{r->
+                if(account?.token!=token)return@onSuccess
+                val devices=r.getAsJsonArray("devices").map{it.asJsonObject}
+                val current=r.get("current_id").asLong
+                val limit=r.get("device_limit").asInt
+                val names=devices.map{v->
+                    val seen=java.text.DateFormat.getDateTimeInstance().format(java.util.Date(v.get("last_seen").asLong*1000))
+                    v.get("model").asString+(if(v.get("id").asLong==current)tr(" (این دستگاه)"," (This device)") else "")+"\n"+tr("آخرین فعالیت: ","Last activity: ")+seen+"\n"+tr("مصرف مستقل: نامشخص","Individual usage: unavailable")
+                }.toTypedArray()
+                AlertDialog.Builder(this@MainActivity).setTitle(tr("دستگاه‌ها","Devices")+" "+devices.size+"/"+limit).setItems(names){_,index->
+                    val id=devices[index].get("id").asLong
+                    if(id!=current)AlertDialog.Builder(this@MainActivity).setMessage(tr("نشست این دستگاه لغو شود؟","Revoke this device session?")).setPositiveButton(tr("خروج دستگاه","Revoke")){_,_->showDevices(id)}.setNegativeButton(tr("انصراف","Cancel"),null).show()
+                }.setNegativeButton(tr("بستن","Close"),null).show()
+            }.onFailure{Toast.makeText(this@MainActivity,tr("دریافت دستگاه‌ها ناموفق بود.","Could not load devices."),Toast.LENGTH_LONG).show()}
+        }
+    }
     private var powerPulse: ValueAnimator?=null
     private var lastPoll = 0L
     private lateinit var expiry: TextView
@@ -209,7 +233,6 @@ class MainActivity : ComponentActivity() {
         put(login, centered("DELTA VPN", 29, fg, true), 16)
         put(login, roundLogo(), 14, dp(88), dp(88), Gravity.CENTER_HORIZONTAL)
         put(login, centered(tr("به دلتا خوش آمدید","Welcome to Delta"), 15, muted), 18)
-        put(login, centered(tr("با نام کاربری و رمز عبور وارد شوید","Sign in with your username and password"), 16, fg), 36)
         input = EditText(this).apply {
             hint = tr("نام کاربری","Username")
             setHintTextColor(muted); setTextColor(fg)
@@ -243,7 +266,7 @@ class MainActivity : ComponentActivity() {
         contacts.addView(button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd=dp(8) })
         contacts.addView(button(tr("پشتیبانی","Support"),panel){openContact("support")},LinearLayout.LayoutParams(0,dp(50),1f))
         put(login,contacts,10)
-        put(login, centered("v1.5.2", 11, muted), 20)
+        put(login, centered("v1.6.0", 11, muted), 20)
 
         val menuButton=button("☰",panel){showDrawer()}
         menuButton.contentDescription=tr("منوی حساب","Account menu")
@@ -299,7 +322,7 @@ class MainActivity : ComponentActivity() {
         servers=column();put(serverSection,servers,8)
         put(dashboard,serverSection)
         dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
-        put(dashboard, centered("v1.5.2",11,muted),16)
+        put(dashboard, centered("v1.6.0",11,muted),16)
 
         drawer=FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt());visibility=View.GONE;setOnClickListener{hideDrawer()} }
         val drawerScroll=ScrollView(this).apply { isFillViewport=true;setBackgroundColor(navy);isClickable=true }
@@ -310,6 +333,7 @@ class MainActivity : ComponentActivity() {
         put(menu,centered(tr("حساب کاربری","My account"),19,fg,true))
         put(menu,quota,18)
         accountName=centered("—",14,fg,true);put(menu,accountName,16)
+        put(menu,button(tr("📱 دستگاه‌ها","📱 Devices"),panel){showDevices()},12)
         put(menu,button(tr("تغییر زبان","Change language"),panel){chooseLanguage()},18)
         put(menu,button(tr("پشتیبانی","Support"),panel){openContact("support")},10)
         put(menu,button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},10)
@@ -317,11 +341,7 @@ class MainActivity : ComponentActivity() {
         put(menu,refreshButton,10)
         clearButton=button(tr("خروج از حساب","Sign out"),Color.parseColor("#A52F42")){requestSignOut()}
         put(menu,clearButton,10)
-        put(menu,centered("v1.5.2",11,muted),16)
-        // Licensing notices remain available separately, not in the account menu.
-        put(menu,button(tr("مجوزهای نرم‌افزار","Software licenses"),navy){
-            AlertDialog.Builder(this).setTitle(tr("مجوزهای نرم‌افزار","Software licenses")).setMessage("v2rayNG — GPL-3.0\nhttps://github.com/2dust/v2rayNG\n\nDelta VPN source\nhttps://github.com/deltashopsiavash/deltavpn\n\nXray-core — MPL-2.0\nhttps://github.com/XTLS/Xray-core").setPositiveButton("OK",null).show()
-        }.apply{textSize=11f;minHeight=dp(32)},4)
+        put(menu,centered("v1.6.0",11,muted),16)
         shell.addView(drawer,FrameLayout.LayoutParams(-1,-1))
         onBackPressedDispatcher.addCallback(this,object:OnBackPressedCallback(true){
             override fun handleOnBackPressed(){
@@ -572,11 +592,7 @@ class MainActivity : ComponentActivity() {
             updateExpiry()
             updateUsage()
             val a = account
-            if (a != null && a.remainingSeconds() == 0L) {
-                account = null; sessionStore.clear()
-                if (running || transitioning) LauncherManager.stopService(this@MainActivity) else repo.clear()
-                render(tr("اعتبار حساب به پایان رسیده است.","Your subscription has expired."))
-            }
+            if (a != null && a.remainingSeconds() == 0L && (running || transitioning)) LauncherManager.stopService(this@MainActivity)
             val now = android.os.SystemClock.elapsedRealtime()
             if (ready && stateKnown && account != null && !busy && !transitioning && pingRequest==null && now-lastPoll>=30000L) {
                 lastPoll=now
@@ -615,7 +631,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun checkedImport(a: DeltaAccount) {
-        check(a.remainingSeconds() > 0)
+        // Expired accounts may view their dashboard; only active subscriptions receive configs.
         repo.refresh(if (a.canConnect) a.configs else emptyList())
         DeltaRefreshCursor(a.token).applied(a,true)
     }
@@ -632,12 +648,12 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
                 repo.clear()
-                val a = accountApi.login(name, secret)
+                val a = accountApi.login(name, secret, deviceId(), (android.os.Build.MANUFACTURER+" "+android.os.Build.MODEL).take(25))
                 try { checkedImport(a); sessionStore.save(a.token); a } catch (e: Exception) { repo.clear(); runCatching { accountApi.logout(a.token) }; throw e }
             } }
             busy = false;manualLogin=false
             result.onSuccess { account = it; delays.clear(); input.text.clear(); render(if (repo.servers.isEmpty()) tr("کانفیگ اختصاصی فعال در دسترس نیست.","No active dedicated server available.") else tr("به دلتا خوش آمدید","Welcome to Delta")) }
-                .onFailure { account = null; render(tr("ورود یا دریافت اشتراک ناموفق بود؛ حساب و تنظیمات سرور را بررسی کنید.","Sign-in or subscription loading failed. Check account and server settings.")) }
+                .onFailure { account = null; render(if(it is DeltaApiException && it.status==409)tr("ظرفیت دستگاه‌های اشتراک تکمیل شده است یا حساب آماده نیست.","Device limit reached or account unavailable.") else tr("ورود یا دریافت اشتراک ناموفق بود؛ حساب و تنظیمات سرور را بررسی کنید.","Sign-in or subscription loading failed. Check account and server settings.")) }
         }
     }
     private fun pollUsage() {
