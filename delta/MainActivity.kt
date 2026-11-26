@@ -46,6 +46,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var status: TextView
     private lateinit var connect: ImageButton
     private lateinit var login: LinearLayout
+    private lateinit var startup: LinearLayout
+    private lateinit var startupStatus: TextView
+    private var starting = true
     private lateinit var dashboard: LinearLayout
     private lateinit var password: EditText
     private var account: DeltaAccount? = null
@@ -112,7 +115,7 @@ class MainActivity : ComponentActivity() {
                 }
                 AppConfig.MSG_STATE_START_FAILURE -> {
                     stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
-                    render("اتصال ناموفق بود؛ سرور دیگری را امتحان کنید.")
+                    render("اتصال ناموفق بود؛ سرور دیگری را امتحان کنید."); maybeRestore()
                 }
             }
         }
@@ -145,16 +148,21 @@ class MainActivity : ComponentActivity() {
         }
         ViewCompat.requestApplyInsets(scroll)
 
-        login = column()
-        dashboard = column()
+        startup = column().apply { gravity = Gravity.CENTER_HORIZONTAL }
+        login = column().apply { visibility = View.GONE }
+        dashboard = column().apply { visibility = View.GONE }
+        add(startup)
         add(login)
         add(dashboard)
 
-        val logo = ImageView(this).apply {
-            setImageResource(com.v2ray.ang.R.drawable.delta_icon)
-            contentDescription = "Delta VPN"
-        }
-        put(login, logo, 38, dp(88), dp(88), Gravity.CENTER_HORIZONTAL)
+        put(startup, roundLogo(), 0, dp(104), dp(104), Gravity.CENTER_HORIZONTAL)
+        put(startup, centered("DELTA VPN", 29, fg, true), 18)
+        val loader = ProgressBar(this).apply { indeterminateTintList = ColorStateList.valueOf(blue) }
+        put(startup, loader, 28, dp(30), dp(30), Gravity.CENTER_HORIZONTAL)
+        startupStatus = centered("در حال آماده‌سازی…", 14, muted)
+        put(startup, startupStatus, 14)
+
+        put(login, roundLogo(), 38, dp(88), dp(88), Gravity.CENTER_HORIZONTAL)
         put(login, centered("DELTA VPN", 29, fg, true), 12)
         put(login, centered("به دلتا خوش آمدید", 15, muted), 18)
         put(login, centered("با نام کاربری و رمز عبور وارد شوید", 16, fg), 36)
@@ -177,13 +185,10 @@ class MainActivity : ComponentActivity() {
         put(login, password, 12)
         importButton = button("ورود به حساب") { signIn() }
         put(login, importButton, 12)
-        put(login, button("ورود مجدد / پاک کردن نشست", panel) {
-            if (!busy && !running) { sessionStore.clear(); restoreAttempted = true; render("نام کاربری و رمز عبور را وارد کنید.") }
-        }, 8)
         loginStatus = centered("در حال آماده‌سازی موتور اتصال…", 14, muted)
         put(login, loginStatus, 18)
         put(login, centered("اختصاصی مشتریان دلتا", 13, muted), 24)
-        put(login, centered("نسخه آزمایشی ۱.۴.۰", 12, muted), 8)
+        put(login, centered("نسخه آزمایشی ۱.۴.۱", 12, muted), 8)
 
         put(dashboard, centered("DELTA VPN", 25, fg, true), 4)
         val quota = column().apply {
@@ -234,14 +239,14 @@ class MainActivity : ComponentActivity() {
         actions.addView(refreshButton, LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd = dp(8) })
         actions.addView(clearButton, LinearLayout.LayoutParams(0,dp(50),1f))
         put(dashboard, actions, 16)
-        put(dashboard, centered("نسخه ۱.۴.۰ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
+        put(dashboard, centered("نسخه ۱.۴.۱ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
         ContextCompat.registerReceiver(this, receiver, IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY), ContextCompat.RECEIVER_NOT_EXPORTED)
         render("در حال آماده‌سازی موتور اتصال…")
         lifecycleScope.launch {
             try {
                 withContext(Dispatchers.IO) { SettingsManager.initAssets(this@MainActivity, assets) }
                 ready = true; render("در انتظار بررسی وضعیت اتصال…"); queryState()
-            } catch (_: Exception) { render("آماده‌سازی موتور اتصال ناموفق بود.") }
+            } catch (_: Exception) { starting = false; render("آماده‌سازی موتور اتصال ناموفق بود.") }
         }
         timer.post(expiryTick)
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
@@ -272,6 +277,7 @@ class MainActivity : ComponentActivity() {
             } else if (!stateKnown) {
                 timer.postDelayed({
                     if (!isFinishing && !isDestroyed && generation == stateQueryGeneration && !stateKnown) {
+                        starting = false
                         render("وضعیت سرویس نامشخص است؛ یک بار دوباره تلاش کنید.")
                     }
                 }, 3000)
@@ -282,6 +288,13 @@ class MainActivity : ComponentActivity() {
     private fun shape(color: Int, radius: Int = 14, stroke: Int? = null) = GradientDrawable().apply {
         setColor(color); cornerRadius = dp(radius).toFloat()
         stroke?.let { setStroke(dp(1), it) }
+    }
+    private fun roundLogo() = ImageView(this).apply {
+        setImageResource(com.v2ray.ang.R.drawable.delta_icon)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) }
+        clipToOutline = true
+        contentDescription = "Delta VPN"
     }
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     private fun centered(t: String, size: Int, color: Int, bold: Boolean = false) =
@@ -324,8 +337,11 @@ class MainActivity : ComponentActivity() {
     }
     private fun render(message: String? = null) {
         val hasSub = running || account != null
-        login.visibility = if (hasSub) View.GONE else View.VISIBLE
-        dashboard.visibility = if (hasSub) View.VISIBLE else View.GONE
+        startup.visibility = if (starting) View.VISIBLE else View.GONE
+        root.gravity = if (starting) Gravity.CENTER_VERTICAL else Gravity.TOP
+        login.visibility = if (!starting && !hasSub) View.VISIBLE else View.GONE
+        dashboard.visibility = if (!starting && hasSub) View.VISIBLE else View.GONE
+        if (starting) startupStatus.text = if (busy) "در حال ورود خودکار…" else "در حال آماده‌سازی…"
         message?.let { status.text = it; loginStatus.text = it }
         if (running && !transitioning && message == null) status.text = "تونل VPN فعال است"
         connect.background = powerBackground(running)
@@ -415,7 +431,13 @@ class MainActivity : ComponentActivity() {
     private fun maybeRestore(force: Boolean = false) {
         if (!ready || !stateKnown || busy || account != null || (restoreAttempted && !force)) return
         restoreAttempted = true
-        val token = sessionStore.read() ?: return
+        val token = sessionStore.read()
+        if (token == null) {
+            starting = false
+            render(if (running) "تونل VPN فعال است" else "نام کاربری و رمز عبور را وارد کنید.")
+            return
+        }
+        starting = true
         busy = true; render("در حال ورود خودکار…")
         val wasRunning = running
         lifecycleScope.launch {
@@ -425,11 +447,13 @@ class MainActivity : ComponentActivity() {
                 a
             } }
             busy = false
+            starting = false
             result.onSuccess { account = it; if (!it.canConnect && running) LauncherManager.stopService(this@MainActivity); render(if (it.canConnect) "به دلتا خوش آمدید" else "اشتراک فعال قابل اتصال نیست.") }.onFailure {
-                if (it is DeltaApiException && it.status == 401) sessionStore.clear()
+                val invalid = it is DeltaApiException && it.status in listOf(401, 409)
+                if (invalid) sessionStore.clear()
                 if (running) LauncherManager.stopService(this@MainActivity)
                 else repo.clear()
-                render(if (it is DeltaApiException && it.status == 401) "نشست منقضی یا لغو شده؛ دوباره وارد شوید." else "ورود خودکار ناموفق بود؛ برای تلاش دوباره ورود را بزنید.")
+                render(if (invalid) "نشست منقضی یا لغو شده؛ دوباره وارد شوید." else "ورود خودکار ناموفق بود؛ برای تلاش دوباره ورود را بزنید.")
             }
         }
     }
