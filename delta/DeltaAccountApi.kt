@@ -15,6 +15,8 @@ data class DeltaAccount(val token: String, val username: String, val configs: Li
     val deadlineElapsed: Long get() = receivedElapsed + (expires-serverNow).coerceAtLeast(0)*1000L
     fun remainingSeconds(): Long = ((deadlineElapsed-SystemClock.elapsedRealtime()).coerceAtLeast(0)+999)/1000
 }
+data class DeltaNewsItem(val id: Long, val body: String, val url: String, val buttonLabel: String, val created: Long, val read: Boolean)
+data class DeltaNewsFeed(val unread: Int, val news: List<DeltaNewsItem>, val nextBefore: Long, val floating: DeltaNewsItem?)
 class DeltaApiException(val status: Int): Exception()
 
 class DeltaAccountApi {
@@ -59,5 +61,30 @@ class DeltaAccountApi {
         addProperty("action",if(revoke==null)"devices" else "revoke_device");addProperty("token",token)
         if(revoke!=null)addProperty("device",revoke)
     })
+    private fun decodeNews(r: JsonObject): DeltaNewsFeed {
+        fun item(j: JsonObject): DeltaNewsItem {
+            val id=j.get("id").asLong;val body=j.get("body").asString
+            val rawUrl=j.get("url").asString
+            val url=if(rawUrl.isBlank()) "" else runCatching {
+                val u=URI(rawUrl)
+                require(u.scheme.equals("https",true)&&u.host!=null&&u.rawUserInfo==null&&rawUrl.length<=2048&&rawUrl.none { it.isWhitespace() || it=='\\' })
+                rawUrl
+            }.getOrDefault("")
+            val label=j.get("button_label").asString.take(60)
+            require(id>0&&body.isNotBlank()&&body.length<=10000)
+            return DeltaNewsItem(id,body,url,label,j.get("created").asLong,j.get("read").asBoolean)
+        }
+        val list=r.getAsJsonArray("news").map { item(it.asJsonObject) }
+        val floating=r.get("floating")?.takeUnless { it.isJsonNull }?.let { item(it.asJsonObject) }
+        val n=r.get("unread").asInt;val next=r.get("next_before").asLong
+        require(n>=0&&list.size<=30&&next>=0)
+        return DeltaNewsFeed(n,list,next,floating)
+    }
+    fun news(token:String,before:Long=0):DeltaNewsFeed = decodeNews(call(JsonObject().apply{
+        addProperty("action","news");addProperty("token",token);addProperty("before",before)
+    }))
+    fun acknowledgeNews(token:String,id:Long,floating:Boolean):DeltaNewsFeed = decodeNews(call(JsonObject().apply{
+        addProperty("action",if(floating)"news_dismiss" else "news_read");addProperty("token",token);addProperty("id",id)
+    }))
     fun logout(token: String) { call(JsonObject().apply { addProperty("action","logout"); addProperty("token",token) }) }
 }
