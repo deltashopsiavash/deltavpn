@@ -697,7 +697,7 @@ class MainActivity : ComponentActivity() {
     private fun newsBody(parent:LinearLayout,body:String){
         val scroll=ScrollView(this).apply { isFillViewport=false; overScrollMode=View.OVER_SCROLL_IF_CONTENT_SCROLLS }
         val text=label(body,15,fg).apply{
-            gravity=Gravity.START;setLineSpacing(dp(5).toFloat(),1.05f);textIsSelectable=true
+            gravity=Gravity.START;setLineSpacing(dp(5).toFloat(),1.05f);setTextIsSelectable(true)
             setPadding(dp(14),dp(12),dp(14),dp(12));background=shape(navy,16)
         }
         scroll.addView(text)
@@ -764,10 +764,11 @@ class MainActivity : ComponentActivity() {
         }
         displayNewsDialog(d)
         newsFeed?.let{renderPage(it,false)}?:put(items,centered(tr("در حال دریافت خبرها…","Loading announcements…"),14,muted),12)
+        val listGeneration=newsGeneration
         lifecycleScope.launch{
             val result=withContext(Dispatchers.IO){runCatching{accountApi.news(token)}}
-            if(!d.isShowing||account?.token!=token)return@launch
-            result.onSuccess{newsFeed=it;updateNewsBadge();renderPage(it,false)}.onFailure{
+            if(!d.isShowing||account?.token!=token||listGeneration!=newsGeneration)return@launch
+            result.onSuccess{if(!newsLoading){newsFeed=it;updateNewsBadge()};renderPage(it,false)}.onFailure{
                 if(newsFeed==null){items.removeAllViews();put(items,centered(tr("دریافت خبر ناموفق بود؛ دوباره باز کنید.","Could not load announcements. Reopen to retry."),14,muted),12)}
             }
         }
