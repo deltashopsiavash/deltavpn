@@ -10,11 +10,13 @@ import java.security.MessageDigest
 /** The authenticated API supplies the shared list; the app never fetches source URLs. */
 class DeltaSubscriptions(context: Context) {
     private val prefs = context.getSharedPreferences("delta_account", Context.MODE_PRIVATE)
-    val group = "delta-primary"
+    private val groups = listOf("delta-primary","delta-stage-a","delta-stage-b")
+    private val digestKey = "delta_catalog_digest_v2"
+    val group: String get() = MmkvManager.decodeSettingsString("delta_catalog_group_v2")?.takeIf { it in groups } ?: groups.first()
     val servers: List<String> get() = MmkvManager.decodeServerList(group)
-    val loaded: Boolean get() = prefs.getString("catalog_digest", null) != null
+    val loaded: Boolean get() = MmkvManager.decodeSettingsString(digestKey)!=null || prefs.getString("catalog_digest", null)!=null
 
-    fun refresh(configs: List<String>): Int {
+    fun refresh(configs: List<String>, preserveRunning: Boolean = false): Int {
         require(configs.size <= 1000)
         val schemes = setOf("vless","vmess","trojan","ss","socks","socks4","socks5","wireguard","hysteria2","hy2","v2rayn")
         val lines = configs.filter { it.length <= 16384 && it.substringBefore("://") in schemes &&
@@ -31,26 +33,56 @@ class DeltaSubscriptions(context: Context) {
         val any = lines.isNotEmpty() || json.isNotEmpty() || wireguard.isNotEmpty()
         check(configs.isEmpty() || any) { "فرمت کانفیگ قابل استفاده نیست." }
         val digest = MessageDigest.getInstance("SHA-256").digest(payload.toByteArray()).joinToString("") { "%02x".format(it.toInt() and 255) }
-        if (prefs.getString("catalog_digest", null) == digest && (servers.isNotEmpty() || !any)) return servers.size
-        val selected = MmkvManager.getSelectServer()?.let { MmkvManager.decodeServerConfig(it)?.remarks }
-        clear()
-        if (any) {
-            var count = 0
-            if (lines.isNotEmpty()) count += AngConfigManager.importTrustedDeltaPayload(lines.joinToString("\n"), group, false, count > 0)
-            if (json.isNotEmpty()) count += AngConfigManager.importTrustedDeltaPayload(json.joinToString(",", "[", "]"), group, true, count > 0)
-            for (conf in wireguard) count += AngConfigManager.importTrustedDeltaPayload(conf, group, true, count > 0)
-            check(count > 0 && servers.isNotEmpty()) { "کانفیگ قابل استفاده دریافت نشد." }
-            MmkvManager.encodeSubscription(group, SubscriptionItem(remarks = "Delta VPN", url = "", lastUpdated = System.currentTimeMillis()))
-            val match = servers.firstOrNull { selected != null && MmkvManager.decodeServerConfig(it)?.remarks == selected }
-            MmkvManager.setSelectServer(match ?: servers.first())
+        val oldGroup=group
+        val selectedId=MmkvManager.getSelectServer()
+        val selected=selectedId?.let { MmkvManager.decodeServerConfig(it)?.remarks }
+        if (MmkvManager.decodeSettingsString(digestKey)==digest && (servers.isNotEmpty() || !any)) {
+            if(!preserveRunning) activateLatest()
+            return servers.size
         }
-        check(prefs.edit().putString("catalog_digest", digest).commit())
-        return servers.size
+        val target=groups.first { it!=oldGroup && (!preserveRunning || selectedId !in MmkvManager.decodeServerList(it)) }
+        MmkvManager.removeSubscription(target)
+        try {
+            if(any){
+                var count=0
+                if(lines.isNotEmpty())count+=AngConfigManager.importTrustedDeltaPayload(lines.joinToString("\n"),target,false,count>0)
+                if(json.isNotEmpty())count+=AngConfigManager.importTrustedDeltaPayload(json.joinToString(",","[","]"),target,true,count>0)
+                for(conf in wireguard)count+=AngConfigManager.importTrustedDeltaPayload(conf,target,true,count>0)
+                check(count>0&&MmkvManager.decodeServerList(target).isNotEmpty())
+                MmkvManager.encodeSubscription(target,SubscriptionItem(remarks="Delta VPN",url="",lastUpdated=System.currentTimeMillis()))
+            }
+            if(preserveRunning && selectedId!=null)MmkvManager.setSelectServer(selectedId)
+            else if(any){
+                val list=MmkvManager.decodeServerList(target)
+                MmkvManager.setSelectServer(list.firstOrNull{selected!=null&&MmkvManager.decodeServerConfig(it)?.remarks==selected}?:list.first())
+            }
+            check(MmkvManager.encodeSettings("delta_catalog_group_v2",target))
+            check(MmkvManager.encodeSettings(digestKey,digest))
+            prefs.edit().remove("catalog_digest").apply()
+            cleanup(preserveRunning)
+            return servers.size
+        }catch(e:Exception){
+            if(group!=target)MmkvManager.removeSubscription(target)
+            if(selectedId!=null)MmkvManager.setSelectServer(selectedId)
+            throw e
+        }
     }
-
-    fun clear() {
-        MmkvManager.removeServerViaSubid(group)
-        MmkvManager.removeSubscription(group)
+    fun activateLatest(){
+        val current=MmkvManager.getSelectServer()
+        if(current !in servers && servers.isNotEmpty()){
+            val name=current?.let{MmkvManager.decodeServerConfig(it)?.remarks}
+            MmkvManager.setSelectServer(servers.firstOrNull{name!=null&&MmkvManager.decodeServerConfig(it)?.remarks==name}?:servers.first())
+        }
+        cleanup(false)
+    }
+    private fun cleanup(preserveRunning:Boolean){
+        val selected=MmkvManager.getSelectServer()
+        groups.filter{it!=group&&(!preserveRunning||selected !in MmkvManager.decodeServerList(it))}.forEach{MmkvManager.removeSubscription(it)}
+    }
+    fun clear(){
+        groups.forEach{MmkvManager.removeSubscription(it)}
+        MmkvManager.encodeSettings("delta_catalog_group_v2",null as String?)
+        MmkvManager.encodeSettings(digestKey,null as String?)
         prefs.edit().clear().apply()
     }
 

@@ -14,6 +14,7 @@ import com.v2ray.ang.delta.DeltaAccountApi
 import com.v2ray.ang.delta.DeltaAccount
 import com.v2ray.ang.delta.DeltaApiException
 import com.v2ray.ang.delta.DeltaSessionStore
+import com.v2ray.ang.delta.DeltaRefreshCursor
 import android.graphics.drawable.Drawable
 import android.content.res.ColorStateList
 import androidx.core.view.ViewCompat
@@ -240,7 +241,7 @@ class MainActivity : ComponentActivity() {
         contacts.addView(button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd=dp(8) })
         contacts.addView(button(tr("پشتیبانی","Support"),panel){openContact("support")},LinearLayout.LayoutParams(0,dp(50),1f))
         put(login,contacts,10)
-        put(login, centered("1.5.0", 11, muted), 20)
+        put(login, centered("1.5.1", 11, muted), 20)
 
         val menuButton=button("☰",panel){showDrawer()}
         menuButton.contentDescription=tr("منوی حساب","Account menu")
@@ -290,7 +291,7 @@ class MainActivity : ComponentActivity() {
         servers=column();put(serverSection,servers,8)
         put(dashboard,serverSection)
         dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
-        put(dashboard, centered("1.5.0",11,muted),16)
+        put(dashboard, centered("1.5.1",11,muted),16)
 
         drawer=FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt());visibility=View.GONE;setOnClickListener{hideDrawer()} }
         val drawerScroll=ScrollView(this).apply { isFillViewport=true;setBackgroundColor(navy);isClickable=true }
@@ -554,7 +555,7 @@ class MainActivity : ComponentActivity() {
                 render(tr("اعتبار حساب به پایان رسیده است.","Your subscription has expired."))
             }
             val now = android.os.SystemClock.elapsedRealtime()
-            if (running && account != null && !busy && !transitioning && now-lastPoll>=60000L) {
+            if (ready && stateKnown && account != null && !busy && !transitioning && pingRequest==null && now-lastPoll>=30000L) {
                 lastPoll=now
                 pollUsage()
             }
@@ -593,6 +594,7 @@ class MainActivity : ComponentActivity() {
     private fun checkedImport(a: DeltaAccount) {
         check(a.remainingSeconds() > 0)
         repo.refresh(if (a.canConnect) a.configs else emptyList())
+        DeltaRefreshCursor(a.token).applied(a,true)
     }
     private fun signIn() {
         if (busy || running || transitioning) return
@@ -617,10 +619,16 @@ class MainActivity : ComponentActivity() {
     }
     private fun pollUsage() {
         val previous=account ?: return
-        if (busy || transitioning) return
+        if (busy || transitioning || pingRequest!=null) return
+        val wasRunning=running
         busy=true
         lifecycleScope.launch {
-            val result=withContext(Dispatchers.IO) { runCatching { accountApi.status(previous.token) } }
+            val result=withContext(Dispatchers.IO) { runCatching {
+                val current=accountApi.status(previous.token)
+                if(!wasRunning&&DeltaRefreshCursor(previous.token).due(current)&&current.canConnect){
+                    val updated=accountApi.session(previous.token);checkedImport(updated);updated
+                }else current
+            } }
             busy=false
             result.onSuccess { updated ->
                 account=updated
@@ -666,6 +674,7 @@ class MainActivity : ComponentActivity() {
     private fun signOut() {
         if (busy || running || transitioning || pingRequest != null) return
         val previous = account
+        previous?.let{DeltaRefreshCursor(it.token).clear()}
         account = null; sessionStore.clear(); repo.clear(); delays.clear(); input.text.clear(); password.text.clear();hideDrawer();serverSection.visibility=View.GONE
         render(tr("از حساب خارج شدید.","Signed out."))
         if (previous != null) lifecycleScope.launch(Dispatchers.IO) { runCatching { accountApi.logout(previous.token) } }
@@ -682,7 +691,7 @@ class MainActivity : ComponentActivity() {
         if (account?.canConnect != true || (account?.remainingSeconds() ?: 0) <= 0 || !repo.canConnect()) return
         MmkvManager.encodeSettings(AppConfig.PREF_MODE, AppConfig.VPN)
         transitioning = true; render(tr("در حال اتصال…","Connecting…"))
-        if (!LauncherManager.startServiceFromToggle(this, account?.deadlineElapsed ?: 0L)) {
+        if (!LauncherManager.startServiceFromToggle(this, account?.deadlineElapsed ?: 0L, account?.token.orEmpty())) {
             transitioning = false; render(tr("شروع سرویس ناموفق بود.","VPN service could not start."))
         } else timer.postDelayed(timeout, 20000)
     }

@@ -51,3 +51,6 @@ Startup shows a dedicated branded loading screen instead of flashing the credent
 
 ## 1.5.0
 Animated aurora background, localized Persian/English custom UI and remembered language, animated sign-in spinner, server selector and real-latency quick connect after entitlement refresh, compact account drawer, purchase/support links from server public_config. Quick connect chooses the lowest successful measured latency (not a bandwidth guarantee). Contacts require updated backend and owner configuration. System VPN dialogs and remote node names remain controlled by OS/provider. Existing quota and encrypted session handling preserved. Device test needed.
+
+## 1.5.1
+Server-configured subscription refresh (default five minutes), versioned global commands; status checks about every 30 seconds while UI or VPN daemon is active. Daemon stages new catalog without altering selected running config for quiet refresh; changed configs take effect at next connection. Forced mode reloads core using current VPN interface and may briefly interrupt traffic. Offline/force-stopped devices receive latest data on next login/reconnect; Android scheduling/network may delay checks. Failed downloads are retried. Old APK cannot execute commands. Real daemon and device testing required.

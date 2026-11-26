@@ -8,7 +8,7 @@ overlay = Path(__file__).resolve().parents[1] / "delta"
 app = root / "V2rayNG/app"
 src = app / "src/main/java/com/v2ray/ang"
 (src / "delta").mkdir(exist_ok=True)
-for name in ("SubscriptionPolicy.kt", "DeltaSubscriptions.kt", "DeltaAccountApi.kt", "DeltaSessionStore.kt"):
+for name in ("SubscriptionPolicy.kt", "DeltaSubscriptions.kt", "DeltaAccountApi.kt", "DeltaSessionStore.kt", "DeltaRefreshCursor.kt"):
     shutil.copy2(overlay / name, src / "delta" / name)
 shutil.copy2(overlay / "MainActivity.kt", src / "ui/main/MainActivity.kt")
 endpoint = os.environ.get("DELTA_APP_API_URL", "").strip() or "https://bot.deltajanebishop.ir/deltabotvps/delta_app_api.php"
@@ -38,16 +38,18 @@ state_code = service_manager.read_text()
 state_anchor = "AppConfig.MSG_REGISTER_CLIENT -> {"
 assert state_code.count(state_anchor) == 1
 state_code = state_code.replace(state_anchor, state_anchor + "\n                    if (isOrderedBroadcast) resultCode = Activity.RESULT_OK", 1)
+assert "private fun reloadCore(): Boolean {" in state_code
+state_code = state_code.replace("private fun reloadCore(): Boolean {", "fun reloadDeltaSubscription(): Boolean = reloadCore()\n\n    private fun reloadCore(): Boolean {", 1)
 service_manager.write_text(state_code)
 
 # Bind each VPN start to the validated monotonic deadline, including in the daemon process.
 launcher = src / "core/LauncherManager.kt"
 launch_code = launcher.read_text()
 for old, new in [
-    ("fun startServiceFromToggle(context: Context): Boolean", "fun startServiceFromToggle(context: Context, deltaDeadline: Long = 0L): Boolean"),
-    ("startContextService(context)", "startContextService(context, deltaDeadline)"),
-    ("private fun startContextService(context: Context)", "private fun startContextService(context: Context, deltaDeadline: Long = 0L)"),
-    ("ContextCompat.startForegroundService(context, intent)", 'ContextCompat.startForegroundService(context, intent.putExtra("deltaDeadline", deltaDeadline))'),
+    ("fun startServiceFromToggle(context: Context): Boolean", "fun startServiceFromToggle(context: Context, deltaDeadline: Long = 0L, deltaToken: String = \"\"): Boolean"),
+    ("startContextService(context)", "startContextService(context, deltaDeadline, deltaToken)"),
+    ("private fun startContextService(context: Context)", "private fun startContextService(context: Context, deltaDeadline: Long = 0L, deltaToken: String = \"\")"),
+    ("ContextCompat.startForegroundService(context, intent)", 'ContextCompat.startForegroundService(context, intent.putExtra("deltaDeadline", deltaDeadline).putExtra("deltaToken", deltaToken))'),
 ]:
     assert old in launch_code, old
     launch_code = launch_code.replace(old,new,1)
@@ -58,22 +60,68 @@ for old,new in [
     ("private var isRunning = false", """private var isRunning = false
     private val deltaHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var deltaDeadline = 0L
+    private var deltaToken = ""
+    private var deltaGeneration = 0L
+    private val deltaExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private val deltaApi = com.v2ray.ang.delta.DeltaAccountApi()
+    private val deltaRefreshCheck = object : Runnable {
+        override fun run() {
+            if (!isRunning || deltaToken.isEmpty()) return
+            val generation=deltaGeneration
+            val token=deltaToken
+            deltaExecutor.execute {
+                val result=runCatching {
+                    val status=deltaApi.status(token)
+                    val cursor=com.v2ray.ang.delta.DeltaRefreshCursor(token)
+                    if(status.canConnect && cursor.due(status)) deltaApi.session(token) else status
+                }
+                deltaHandler.post {
+                    if(!isRunning||generation!=deltaGeneration)return@post
+                    result.onSuccess { a ->
+                        if(!a.canConnect || a.remainingSeconds()<=0){stopAllService();return@onSuccess}
+                        val cursor=com.v2ray.ang.delta.DeltaRefreshCursor(token)
+                        if(a.configs.isNotEmpty() && cursor.due(a)){
+                            runCatching {
+                                val repo=com.v2ray.ang.delta.DeltaSubscriptions(this@CoreVpnService)
+                                repo.refresh(a.configs,true)
+                                val restart=cursor.reconnect(a)
+                                if(restart){
+                                    repo.activateLatest()
+                                    if(!CoreServiceManager.reloadDeltaSubscription()){stopAllService();return@onSuccess}
+                                }
+                                cursor.applied(a,restart)
+                            }
+                        }
+                    }.onFailure {
+                        if(it is com.v2ray.ang.delta.DeltaApiException && it.status in listOf(401,409))stopAllService()
+                    }
+                    if(isRunning&&generation==deltaGeneration)deltaHandler.postDelayed(this,30000L)
+                }
+            }
+        }
+    }
     private val deltaExpiryCheck = object : Runnable {
         override fun run() {
             val left = deltaDeadline - android.os.SystemClock.elapsedRealtime()
             if (left <= 0L) stopAllService() else deltaHandler.postDelayed(this, minOf(1000L,left))
         }
     }"""),
-    ("super.onDestroy()", "deltaHandler.removeCallbacksAndMessages(null)\n        super.onDestroy()"),
+    ("super.onDestroy()", "deltaGeneration++\n        deltaHandler.removeCallbacksAndMessages(null)\n        deltaExecutor.shutdownNow()\n        super.onDestroy()"),
     ("NotificationManager.ensureForeground()", """NotificationManager.ensureForeground()
         val deadline = intent?.getLongExtra("deltaDeadline",0L) ?: 0L
         if (deadline <= android.os.SystemClock.elapsedRealtime()) {
             stopSelf()
             return START_NOT_STICKY
         }
-        deltaDeadline = deadline"""),
-    ("        startService()\n        return START_STICKY", "        startService()\n        deltaHandler.removeCallbacksAndMessages(null)\n        deltaHandler.post(deltaExpiryCheck)\n        return START_NOT_STICKY"),
-    ("private fun stopAllService(isForced: Boolean = true) {", "private fun stopAllService(isForced: Boolean = true) {\n        deltaHandler.removeCallbacksAndMessages(null)"),
+        deltaDeadline = deadline
+        deltaToken = intent?.getStringExtra("deltaToken").orEmpty()
+        if (!deltaToken.matches(Regex("[a-f0-9]{64}"))) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        deltaGeneration++"""),
+    ("        startService()\n        return START_STICKY", "        startService()\n        deltaHandler.removeCallbacksAndMessages(null)\n        deltaHandler.post(deltaExpiryCheck)\n        deltaHandler.postDelayed(deltaRefreshCheck,30000L)\n        return START_NOT_STICKY"),
+    ("private fun stopAllService(isForced: Boolean = true) {", "private fun stopAllService(isForced: Boolean = true) {\n        deltaGeneration++\n        deltaHandler.removeCallbacksAndMessages(null)"),
 ]:
     assert old in vpn_code, old
     vpn_code=vpn_code.replace(old,new,1)
@@ -85,8 +133,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 12'),
-    ('versionName = "2.3.15"', 'versionName = "1.5.0"'),
+    ('versionCode = 755', 'versionCode = 13'),
+    ('versionName = "2.3.15"', 'versionName = "1.5.1"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
