@@ -92,6 +92,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var loginStatus: TextView
     private lateinit var usageText: TextView
     private lateinit var usageDetail: TextView
+    private var usageStale=false
+    private var powerPulse: ValueAnimator?=null
     private var lastPoll = 0L
     private lateinit var expiry: TextView
     private lateinit var usageBar: ProgressBar
@@ -143,7 +145,7 @@ class MainActivity : ComponentActivity() {
                 }
                 AppConfig.MSG_STATE_RUNNING, AppConfig.MSG_STATE_START_SUCCESS -> {
                     stateQueryGeneration++; stateKnown = true; running = true; transitioning = false; timer.removeCallbacks(timeout)
-                    render(tr("تونل VPN فعال است","VPN is connected")); maybeRestore()
+                    render(tr("اتصال برقرار است","Connected")); maybeRestore()
                 }
                 AppConfig.MSG_STATE_NOT_RUNNING, AppConfig.MSG_STATE_STOP_SUCCESS -> {
                     stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
@@ -204,8 +206,8 @@ class MainActivity : ComponentActivity() {
         startupStatus = centered(tr("در حال آماده‌سازی…","Preparing…"), 14, muted)
         put(startup, startupStatus, 14)
 
-        put(login, roundLogo(), 38, dp(88), dp(88), Gravity.CENTER_HORIZONTAL)
-        put(login, centered("DELTA VPN", 29, fg, true), 12)
+        put(login, centered("DELTA VPN", 29, fg, true), 16)
+        put(login, roundLogo(), 14, dp(88), dp(88), Gravity.CENTER_HORIZONTAL)
         put(login, centered(tr("به دلتا خوش آمدید","Welcome to Delta"), 15, muted), 18)
         put(login, centered(tr("با نام کاربری و رمز عبور وارد شوید","Sign in with your username and password"), 16, fg), 36)
         input = EditText(this).apply {
@@ -241,13 +243,14 @@ class MainActivity : ComponentActivity() {
         contacts.addView(button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd=dp(8) })
         contacts.addView(button(tr("پشتیبانی","Support"),panel){openContact("support")},LinearLayout.LayoutParams(0,dp(50),1f))
         put(login,contacts,10)
-        put(login, centered("1.5.1", 11, muted), 20)
+        put(login, centered("v1.5.2", 11, muted), 20)
 
         val menuButton=button("☰",panel){showDrawer()}
         menuButton.contentDescription=tr("منوی حساب","Account menu")
         put(dashboard,menuButton,0,dp(52),dp(48),Gravity.START)
-        dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
-        put(dashboard, centered("DELTA VPN", 30, fg, true), 12)
+        put(dashboard, centered("DELTA VPN", 30, fg, true), 0)
+        put(dashboard, roundLogo(), 14, dp(78), dp(78), Gravity.CENTER_HORIZONTAL)
+        dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,0.65f))
         val quota = column().apply {
             background = shape(panel, 18); setPadding(dp(16),dp(15),dp(16),dp(15))
         }
@@ -273,25 +276,30 @@ class MainActivity : ComponentActivity() {
             contentDescription = tr("اتصال یا قطع اتصال","Connect or disconnect")
             setPadding(0,0,0,0)
             stateListAnimator = null; elevation = dp(3).toFloat()
-            setOnClickListener { toggle() }
+            setOnClickListener { performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY); toggle() }
         }
         put(dashboard, connect, 30, dp(158), dp(158), Gravity.CENTER_HORIZONTAL)
         status = centered(tr("برای اتصال لمس کنید","Tap to connect"), 14, muted)
         put(dashboard, status, 12)
 
-        serverPicker=button(tr("سرورهای قابل اتصال","Available servers")+"  ▾",panel) {
-            serverSection.visibility=if(serverSection.visibility==View.VISIBLE) View.GONE else View.VISIBLE
+        serverPicker=button(tr("🌐 سرورهای قابل اتصال","🌐 Available servers")+"  ▾",panel) {
+            val show=serverSection.visibility!=View.VISIBLE
+            serverSection.visibility=if(show)View.VISIBLE else View.GONE
+            serverPicker.text=tr("🌐 سرورهای قابل اتصال","🌐 Available servers")+if(show)"  ▴" else "  ▾"
+            if(show){serverSection.alpha=0f;serverSection.translationY=-dp(8).toFloat();serverSection.animate().alpha(1f).translationY(0f).setDuration(220).start()}
         }
         put(dashboard,serverPicker,30)
         serverSection=column().apply { visibility=View.GONE }
         quickButton=button(tr("⚡ اتصال سریع","⚡ Quick connect")){validateAccount(false,true)}
-        put(serverSection,quickButton,10)
-        pingButton=button(tr("تست پینگ","Test latency"),panel){testServers()}
-        put(serverSection,pingButton,8)
+        pingButton=button(tr("📶 تست پینگ","📶 Ping"),panel){testServers()}.apply{textSize=12f;minWidth=0;setPadding(dp(6),0,dp(6),0)}
+        val serverActions=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL;gravity=Gravity.CENTER_VERTICAL}
+        serverActions.addView(quickButton,LinearLayout.LayoutParams(0,dp(48),1.6f).apply{marginEnd=dp(8)})
+        serverActions.addView(pingButton,LinearLayout.LayoutParams(0,dp(48),1f))
+        put(serverSection,serverActions,10)
         servers=column();put(serverSection,servers,8)
         put(dashboard,serverSection)
         dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
-        put(dashboard, centered("1.5.1",11,muted),16)
+        put(dashboard, centered("v1.5.2",11,muted),16)
 
         drawer=FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt());visibility=View.GONE;setOnClickListener{hideDrawer()} }
         val drawerScroll=ScrollView(this).apply { isFillViewport=true;setBackgroundColor(navy);isClickable=true }
@@ -309,7 +317,11 @@ class MainActivity : ComponentActivity() {
         put(menu,refreshButton,10)
         clearButton=button(tr("خروج از حساب","Sign out"),Color.parseColor("#A52F42")){requestSignOut()}
         put(menu,clearButton,10)
-        put(menu,centered("Xray / v2rayNG · GPL-3.0",10,muted),16)
+        put(menu,centered("v1.5.2",11,muted),16)
+        // Licensing notices remain available separately, not in the account menu.
+        put(menu,button(tr("مجوزهای نرم‌افزار","Software licenses"),navy){
+            AlertDialog.Builder(this).setTitle(tr("مجوزهای نرم‌افزار","Software licenses")).setMessage("v2rayNG — GPL-3.0\nhttps://github.com/2dust/v2rayNG\n\nDelta VPN source\nhttps://github.com/deltashopsiavash/deltavpn\n\nXray-core — MPL-2.0\nhttps://github.com/XTLS/Xray-core").setPositiveButton("OK",null).show()
+        }.apply{textSize=11f;minHeight=dp(32)},4)
         shell.addView(drawer,FrameLayout.LayoutParams(-1,-1))
         onBackPressedDispatcher.addCallback(this,object:OnBackPressedCallback(true){
             override fun handleOnBackPressed(){
@@ -373,6 +385,7 @@ class MainActivity : ComponentActivity() {
         }else signOut()
     }
     override fun onDestroy() {
+        powerPulse?.cancel();powerPulse=null
         if (pingRequest != null) MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
         timer.removeCallbacksAndMessages(null)
         MessageHelper.sendMsg2Service(this, AppConfig.MSG_UNREGISTER_CLIENT, "")
@@ -471,8 +484,11 @@ class MainActivity : ComponentActivity() {
         dashboard.visibility = if (!starting && hasSub) View.VISIBLE else View.GONE
         if (starting) startupStatus.text = if (busy) tr("در حال ورود خودکار…","Signing in automatically…") else tr("در حال آماده‌سازی…","Preparing…")
         message?.let { status.text = it; loginStatus.text = it }
-        if (running && !transitioning && message == null) status.text = tr("تونل VPN فعال است","VPN is connected")
+        if (!transitioning && message == null && pingRequest==null) status.text = if(running)tr("اتصال برقرار است","Connected") else tr("برای اتصال لمس کنید","Tap to connect")
         connect.background = powerBackground(running)
+        if(transitioning && powerPulse==null && (android.os.Build.VERSION.SDK_INT<26 || ValueAnimator.areAnimatorsEnabled())){
+            powerPulse=ValueAnimator.ofFloat(1f,0.94f,1f).apply{duration=1000;repeatCount=ValueAnimator.INFINITE;addUpdateListener{val v=it.animatedValue as Float;connect.scaleX=v;connect.scaleY=v};start()}
+        }else if(!transitioning){powerPulse?.cancel();powerPulse=null;connect.scaleX=1f;connect.scaleY=1f}
         connect.contentDescription = if (running) tr("قطع اتصال","Disconnect") else tr("اتصال","Connect")
         connect.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest == null && (running || (account?.canConnect == true && repo.canConnect()))
         connect.alpha = if (connect.isEnabled) 1f else 0.55f
@@ -489,16 +505,9 @@ class MainActivity : ComponentActivity() {
         if(manualLogin){importButton.animate().scaleX(0.97f).scaleY(0.97f).setDuration(160).start()}
         else {importButton.animate().scaleX(1f).scaleY(1f).setDuration(180).start()}
         pingButton.isEnabled = editable && hasSub && account != null
-        pingButton.text = if (pingRequest != null) tr("در حال تست…","Testing…") else tr("تست پینگ","Test latency")
+        pingButton.text = if (pingRequest != null) tr("در حال تست…","Testing…") else tr("📶 تست پینگ","📶 Ping")
 
-        val current = account
-        usageText.text = current?.let { "${gb(it.remainingBytes)} / ${it.gb} GB" } ?: "—"
-        usageDetail.text = current?.let {
-            val age = ((android.os.SystemClock.elapsedRealtime()-it.receivedElapsed).coerceAtLeast(0)/1000)
-            tr("مصرف: ${gb(it.usedBytes)} GB · آخرین دریافت: ${age} ثانیه قبل","Used: ${gb(it.usedBytes)} GB · Updated ${age}s ago")
-        } ?: tr("مصرف: نامشخص","Usage: unknown")
-        usageBar.visibility = if (current == null) View.GONE else View.VISIBLE
-        usageBar.progress = current?.let { (it.remainingBytes.toDouble()/it.limitBytes*1000).toInt().coerceIn(0,1000) } ?: 0
+        updateUsage()
         updateExpiry()
 
         servers.removeAllViews()
@@ -527,12 +536,25 @@ class MainActivity : ComponentActivity() {
             } }
             row.addView(dot, LinearLayout.LayoutParams(dp(9),dp(9)).apply { marginEnd = dp(10) })
             val names = column()
-            put(names,label(profile.remarks.ifBlank { profile.configType.name },14,fg,true).apply { maxLines = 2 })
-            put(names,label(profile.configType.name,11,muted),3)
+            put(names,label(profile.remarks.ifBlank { tr("سرور","Server") },14,fg,true).apply { maxLines = 2 })
+    
             row.addView(names,LinearLayout.LayoutParams(0,-2,1f))
             row.addView(label(if (latency == null) "—" else if (latency <= 0) "Timeout" else "$latency ms",12,color,true))
             put(servers,row,8)
         }
+    }
+    private fun updateUsage(){
+        val current=account
+        usageText.text = current?.let { "${gb(it.remainingBytes)} / ${it.gb} GB" } ?: "—"
+        usageDetail.text = current?.let {
+            val age = ((android.os.SystemClock.elapsedRealtime()-it.receivedElapsed).coerceAtLeast(0)/1000)
+            val detail=tr("مصرف: ${gb(it.usedBytes)} GB · آخرین دریافت: ${age} ثانیه قبل","Used: ${gb(it.usedBytes)} GB · Updated ${age}s ago")
+            if(usageStale)detail+"\n"+tr("به‌روزرسانی با تأخیر","Update delayed") else detail
+        } ?: tr("مصرف: نامشخص","Usage: unknown")
+        usageBar.visibility = if (current == null) View.GONE else View.VISIBLE
+        usageBar.progress = current?.let { (it.remainingBytes.toDouble()/it.limitBytes*1000).toInt().coerceIn(0,1000) } ?: 0
+
+
     }
     private fun updateExpiry() {
         val a = account
@@ -548,6 +570,7 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             if (isDestroyed) return
             updateExpiry()
+            updateUsage()
             val a = account
             if (a != null && a.remainingSeconds() == 0L) {
                 account = null; sessionStore.clear()
@@ -568,7 +591,7 @@ class MainActivity : ComponentActivity() {
         val token = sessionStore.read()
         if (token == null) {
             starting = false
-            render(if (running) tr("تونل VPN فعال است","VPN is connected") else tr("نام کاربری و رمز عبور را وارد کنید.","Enter username and password."))
+            render(if (running) tr("اتصال برقرار است","Connected") else tr("نام کاربری و رمز عبور را وارد کنید.","Enter username and password."))
             return
         }
         starting = true
@@ -631,7 +654,7 @@ class MainActivity : ComponentActivity() {
             } }
             busy=false
             result.onSuccess { updated ->
-                account=updated
+                account=updated;usageStale=false
                 if (!updated.canConnect && running) LauncherManager.stopService(this@MainActivity)
                 render(if (!updated.canConnect) tr("حجم یا اعتبار یا دسترسی اشتراک به پایان رسیده است.","Subscription data, validity or access has ended.") else null)
             }.onFailure {
@@ -640,7 +663,8 @@ class MainActivity : ComponentActivity() {
                     if(running) LauncherManager.stopService(this@MainActivity) else repo.clear()
                     render(tr("نشست لغو شده است.","Session revoked."))
                 } else {
-                    render(tr("دریافت مصرف از پنل ناموفق بود؛ آخرین مقدار نمایش داده می‌شود.","Usage refresh failed. Last known value shown."))
+                    usageStale=true
+                    render()
                 }
             }
         }
@@ -690,34 +714,66 @@ class MainActivity : ComponentActivity() {
     private fun startTunnel() {
         if (account?.canConnect != true || (account?.remainingSeconds() ?: 0) <= 0 || !repo.canConnect()) return
         MmkvManager.encodeSettings(AppConfig.PREF_MODE, AppConfig.VPN)
-        transitioning = true; render(tr("در حال اتصال…","Connecting…"))
+        transitioning = true; render(tr("در حال برقراری اتصال…","Connecting…"))
         if (!LauncherManager.startServiceFromToggle(this, account?.deadlineElapsed ?: 0L, account?.token.orEmpty())) {
             transitioning = false; render(tr("شروع سرویس ناموفق بود.","VPN service could not start."))
         } else timer.postDelayed(timeout, 20000)
     }
 }
 
-/** Lightweight animated aurora behind both screens; no network or image assets. */
+
+/** Animated abstract mesh: drifting vertices, traveling light pulses and luminous links. */
 private class DeltaMotionView(context:Context):View(context){
     var active=false
     private val paint=Paint(Paint.ANTI_ALIAS_FLAG)
+    private val cols=6
+    private val rows=10
+    private val xs=FloatArray(cols*rows)
+    private val ys=FloatArray(cols*rows)
+    private val base=Color.rgb(11,15,34)
     override fun onDraw(canvas:Canvas){
         super.onDraw(canvas)
         if(width<=0||height<=0)return
-        canvas.drawColor(Color.parseColor("#0D1524"))
+        canvas.drawColor(base)
         val enabled=android.os.Build.VERSION.SDK_INT<26||ValueAnimator.areAnimatorsEnabled()
-        val t=if(enabled)android.os.SystemClock.elapsedRealtime()/7000.0 else 0.0
+        val t=if(enabled)android.os.SystemClock.elapsedRealtime()/1000.0 else 0.0
         val w=width.toFloat();val h=height.toFloat()
-        for(i in 0..2){
-            val phase=t+i*2.1
-            val x=w*(0.5f+0.35f*kotlin.math.sin(phase).toFloat())
-            val y=h*(0.22f+i*0.25f+0.11f*kotlin.math.cos(phase*0.72).toFloat())
-            val color=when(i){0->0x603478F6;1->0x404D39BA;else->0x3027C6BD}
-            val radius=maxOf(w,h)*0.47f
-            paint.shader=RadialGradient(x,y,radius,intArrayOf(color,0x000D1524),null,Shader.TileMode.CLAMP)
+        val unit=minOf(w/cols,h/rows)
+        for(i in 0..1){
+            val phase=t*0.22+i*3.1
+            val cx=w*(0.5f+0.28f*kotlin.math.sin(phase).toFloat())
+            val cy=h*(0.35f+i*0.3f)
+            paint.shader=RadialGradient(cx,cy,maxOf(w,h)*0.63f, intArrayOf(if(i==0)0x504239B8 else 0x403478F6,0x000B0F22),null,Shader.TileMode.CLAMP)
             canvas.drawRect(0f,0f,w,h,paint)
         }
         paint.shader=null
-        if(active&&enabled&&isShown)postInvalidateDelayed(40)
+        for(r in 0 until rows)for(c in 0 until cols){
+            val i=r*cols+c
+            xs[i]=(c+0.5f+(if(r%2==0)0.12f else -0.12f))*w/cols+unit*0.22f*kotlin.math.sin(t*0.57+i*1.73).toFloat()
+            ys[i]=(r+0.5f)*h/rows+unit*0.24f*kotlin.math.cos(t*0.43+i*2.19).toFloat()
+        }
+        fun edge(a:Int,b:Int){
+            paint.color=0x465A70EF;paint.strokeWidth=resources.displayMetrics.density*0.8f
+            canvas.drawLine(xs[a],ys[a],xs[b],ys[b],paint)
+            if((a*7+b)%5==0){
+                val f=((t*0.23+a*0.137)%1.0).toFloat()
+                val x=xs[a]+(xs[b]-xs[a])*f;val y=ys[a]+(ys[b]-ys[a])*f
+                paint.color=0xBB94B8FF.toInt();canvas.drawCircle(x,y,unit*0.025f,paint)
+            }
+        }
+        for(r in 0 until rows)for(c in 0 until cols){
+            val a=r*cols+c
+            if(c+1<cols)edge(a,a+1)
+            if(r+1<rows){edge(a,a+cols);if(c+1<cols)edge(a,a+cols+1)}
+        }
+        for(i in xs.indices){
+            val pulse=(0.5+0.5*kotlin.math.sin(t*1.7+i*2.4)).toFloat()
+            val radius=unit*(0.055f+0.10f*pulse)
+            paint.shader=RadialGradient(xs[i],ys[i],radius,intArrayOf(0x997D94FF.toInt(),0x007D94FF),null,Shader.TileMode.CLAMP)
+            canvas.drawCircle(xs[i],ys[i],radius,paint)
+            paint.shader=null;paint.color=Color.argb((110+130*pulse).toInt(),161,185,255)
+            canvas.drawCircle(xs[i],ys[i],unit*(0.018f+0.013f*pulse),paint)
+        }
+        if(active&&enabled&&isShown)postInvalidateDelayed(33)
     }
 }

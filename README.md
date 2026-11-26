@@ -54,3 +54,6 @@ Animated aurora background, localized Persian/English custom UI and remembered l
 
 ## 1.5.1
 Server-configured subscription refresh (default five minutes), versioned global commands; status checks about every 30 seconds while UI or VPN daemon is active. Daemon stages new catalog without altering selected running config for quiet refresh; changed configs take effect at next connection. Forced mode reloads core using current VPN interface and may briefly interrupt traffic. Offline/force-stopped devices receive latest data on next login/reconnect; Android scheduling/network may delay checks. Failed downloads are retried. Old APK cannot execute commands. Real daemon and device testing required.
+
+## 1.5.2
+Animated abstract network mesh, title and circular logo above power control, compact ping row, no technical protocol label, version prefix, separate stale usage warning in account card, and power pulse. License notices retained via separate dialog. No backend changes; API failure root cause not diagnosed by this UI change. Device testing required.
