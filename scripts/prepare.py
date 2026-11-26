@@ -79,6 +79,8 @@ for old,new in [
                     if(!isRunning||generation!=deltaGeneration)return@post
                     result.onSuccess { a ->
                         if(!a.canConnect || a.remainingSeconds()<=0){stopAllService();return@onSuccess}
+                        // Renewed accounts may extend the already-running session deadline.
+                        deltaDeadline=a.deadlineElapsed
                         val cursor=com.v2ray.ang.delta.DeltaRefreshCursor(token)
                         if(a.configs.isNotEmpty() && cursor.due(a)){
                             runCatching {
@@ -133,8 +135,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 16'),
-    ('versionName = "2.3.15"', 'versionName = "1.6.1"'),
+    ('versionCode = 755', 'versionCode = 17'),
+    ('versionName = "2.3.15"', 'versionName = "1.7.0"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
