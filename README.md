@@ -48,3 +48,6 @@ Requires dedicated backend provisioning. Each account receives only its own conf
 
 ## 1.4.1
 Startup shows a dedicated branded loading screen instead of flashing the credential form during encrypted session restoration. Both the loading and sign-in logo are circular, with the existing artwork preserved. Removed the separate reset-session button from login; normal sign-in and dashboard sign-out remain available. Transient failures return to the existing sign-in screen and permit a retry via the normal login button. Dashboard design, backend, and quota logic unchanged. Verify cold start and offline retry on device.
+
+## 1.5.0
+Animated aurora background, localized Persian/English custom UI and remembered language, animated sign-in spinner, server selector and real-latency quick connect after entitlement refresh, compact account drawer, purchase/support links from server public_config. Quick connect chooses the lowest successful measured latency (not a bandwidth guarantee). Contacts require updated backend and owner configuration. System VPN dialogs and remote node names remain controlled by OS/provider. Existing quota and encrypted session handling preserved. Device test needed.

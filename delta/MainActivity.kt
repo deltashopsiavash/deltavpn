@@ -1,6 +1,15 @@
 package com.v2ray.ang.ui.main
 
 import android.content.BroadcastReceiver
+import android.app.AlertDialog
+import android.animation.ValueAnimator
+import android.content.res.Configuration
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RadialGradient
+import android.graphics.Shader
+import android.net.Uri
+import androidx.activity.OnBackPressedCallback
 import com.v2ray.ang.delta.DeltaAccountApi
 import com.v2ray.ang.delta.DeltaAccount
 import com.v2ray.ang.delta.DeltaApiException
@@ -49,6 +58,28 @@ class MainActivity : ComponentActivity() {
     private lateinit var startup: LinearLayout
     private lateinit var startupStatus: TextView
     private var starting = true
+    private var english = false
+    private lateinit var shell: FrameLayout
+    private lateinit var motion: DeltaMotionView
+    private lateinit var drawer: FrameLayout
+    private lateinit var accountName: TextView
+    private lateinit var serverSection: LinearLayout
+    private lateinit var serverPicker: Button
+    private lateinit var quickButton: Button
+    private lateinit var loginSpinner: ProgressBar
+    private var manualLogin = false
+    private var quickMode = false
+    private var logoutPending = false
+    private var openingContact = false
+    private fun tr(fa: String, en: String) = if (english) en else fa
+    override fun attachBaseContext(newBase: Context) {
+        val en = newBase.getSharedPreferences("delta_ui", Context.MODE_PRIVATE).getString("language","fa") == "en"
+        english = en
+        val locale = Locale.forLanguageTag(if (en) "en" else "fa")
+        val cfg = Configuration(newBase.resources.configuration)
+        cfg.setLocale(locale); cfg.setLayoutDirection(locale)
+        super.attachBaseContext(newBase.createConfigurationContext(cfg))
+    }
     private lateinit var dashboard: LinearLayout
     private lateinit var password: EditText
     private var account: DeltaAccount? = null
@@ -85,8 +116,8 @@ class MainActivity : ComponentActivity() {
     private val muted = Color.parseColor("#A6B6D0")
     private val panel = Color.parseColor("#17263D")
     private val timeout = Runnable {
-        transitioning = false
-        render("پاسخ سرویس دریافت نشد؛ وضعیت اتصال را بررسی کنید.")
+        transitioning = false;logoutPending=false
+        render(tr("پاسخ سرویس دریافت نشد؛ وضعیت اتصال را بررسی کنید.","VPN service did not respond. Check connection."))
         queryState()
     }
     private val receiver = object : BroadcastReceiver() {
@@ -101,27 +132,32 @@ class MainActivity : ComponentActivity() {
                 }
                 AppConfig.MSG_MEASURE_CONFIG_FINISH, AppConfig.MSG_MEASURE_CONFIG_CANCEL -> {
                     if (pingRequest != null && intent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID) == pingRequest) {
+                        val complete = intent.getIntExtra("key",0) == AppConfig.MSG_MEASURE_CONFIG_FINISH
                         pingRequest = null
-                        render("تست سرورها پایان یافت.")
+                        if (quickMode && complete) finishQuick() else {
+                            quickMode = false
+                            render(if (complete) tr("تست سرورها پایان یافت.","Server test finished.") else tr("تست لغو شد.","Test cancelled."))
+                        }
                     }
                 }
                 AppConfig.MSG_STATE_RUNNING, AppConfig.MSG_STATE_START_SUCCESS -> {
                     stateQueryGeneration++; stateKnown = true; running = true; transitioning = false; timer.removeCallbacks(timeout)
-                    render("تونل VPN فعال است"); maybeRestore()
+                    render(tr("تونل VPN فعال است","VPN is connected")); maybeRestore()
                 }
                 AppConfig.MSG_STATE_NOT_RUNNING, AppConfig.MSG_STATE_STOP_SUCCESS -> {
                     stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
-                    render(if (account == null) "نام کاربری و رمز عبور را وارد کنید." else "قطع اتصال"); maybeRestore()
+                    if (logoutPending) { logoutPending=false; signOut() }
+                    else { render(if (account == null) tr("نام کاربری و رمز عبور را وارد کنید.","Enter username and password.") else tr("قطع اتصال","Disconnect")); maybeRestore() }
                 }
                 AppConfig.MSG_STATE_START_FAILURE -> {
                     stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
-                    render("اتصال ناموفق بود؛ سرور دیگری را امتحان کنید."); maybeRestore()
+                    render(tr("اتصال ناموفق بود؛ سرور دیگری را امتحان کنید.","Connection failed. Try another server.")); maybeRestore()
                 }
             }
         }
     }
     private val permission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (it.resultCode == RESULT_OK) startTunnel() else render("مجوز VPN داده نشد.")
+        if (it.resultCode == RESULT_OK) startTunnel() else render(tr("مجوز VPN داده نشد.","VPN permission was denied."))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -131,22 +167,25 @@ class MainActivity : ComponentActivity() {
         window.statusBarColor = navy
         window.navigationBarColor = navy
         window.decorView.systemUiVisibility = 0
+        shell = FrameLayout(this).apply { setBackgroundColor(navy); layoutDirection=if(english) View.LAYOUT_DIRECTION_LTR else View.LAYOUT_DIRECTION_RTL }
+        motion = DeltaMotionView(this)
+        shell.addView(motion,FrameLayout.LayoutParams(-1,-1))
         val scroll = ScrollView(this).apply {
-            setBackgroundColor(navy)
+            setBackgroundColor(Color.TRANSPARENT)
             isFillViewport = true
             clipToPadding = false
         }
         root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; layoutDirection = View.LAYOUT_DIRECTION_RTL
+            orientation = LinearLayout.VERTICAL; layoutDirection = if(english) View.LAYOUT_DIRECTION_LTR else View.LAYOUT_DIRECTION_RTL
             setPadding(dp(24), dp(18), dp(24), dp(24))
         }
-        scroll.addView(root); setContentView(scroll)
-        ViewCompat.setOnApplyWindowInsetsListener(scroll) { view, insets ->
+        scroll.addView(root); shell.addView(scroll,FrameLayout.LayoutParams(-1,-1)); setContentView(shell)
+        ViewCompat.setOnApplyWindowInsetsListener(shell) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
-        ViewCompat.requestApplyInsets(scroll)
+        ViewCompat.requestApplyInsets(shell)
 
         startup = column().apply { gravity = Gravity.CENTER_HORIZONTAL }
         login = column().apply { visibility = View.GONE }
@@ -154,20 +193,22 @@ class MainActivity : ComponentActivity() {
         add(startup)
         add(login)
         add(dashboard)
+        (login.layoutParams as LinearLayout.LayoutParams).weight=1f
+        (dashboard.layoutParams as LinearLayout.LayoutParams).weight=1f
 
         put(startup, roundLogo(), 0, dp(104), dp(104), Gravity.CENTER_HORIZONTAL)
         put(startup, centered("DELTA VPN", 29, fg, true), 18)
         val loader = ProgressBar(this).apply { indeterminateTintList = ColorStateList.valueOf(blue) }
         put(startup, loader, 28, dp(30), dp(30), Gravity.CENTER_HORIZONTAL)
-        startupStatus = centered("در حال آماده‌سازی…", 14, muted)
+        startupStatus = centered(tr("در حال آماده‌سازی…","Preparing…"), 14, muted)
         put(startup, startupStatus, 14)
 
         put(login, roundLogo(), 38, dp(88), dp(88), Gravity.CENTER_HORIZONTAL)
         put(login, centered("DELTA VPN", 29, fg, true), 12)
-        put(login, centered("به دلتا خوش آمدید", 15, muted), 18)
-        put(login, centered("با نام کاربری و رمز عبور وارد شوید", 16, fg), 36)
+        put(login, centered(tr("به دلتا خوش آمدید","Welcome to Delta"), 15, muted), 18)
+        put(login, centered(tr("با نام کاربری و رمز عبور وارد شوید","Sign in with your username and password"), 16, fg), 36)
         input = EditText(this).apply {
-            hint = "نام کاربری"
+            hint = tr("نام کاربری","Username")
             setHintTextColor(muted); setTextColor(fg)
             setSingleLine(true); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_NORMAL
             textDirection = View.TEXT_DIRECTION_LTR; layoutDirection = View.LAYOUT_DIRECTION_LTR
@@ -176,25 +217,40 @@ class MainActivity : ComponentActivity() {
         }
         put(login, input, 14)
         password = EditText(this).apply {
-            hint = "رمز عبور"; setHintTextColor(muted); setTextColor(fg)
+            hint = tr("رمز عبور","Password"); setHintTextColor(muted); setTextColor(fg)
             setSingleLine(true); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             textDirection = View.TEXT_DIRECTION_LTR; layoutDirection = View.LAYOUT_DIRECTION_LTR
             isSaveEnabled = false
             setPadding(dp(15),dp(16),dp(15),dp(16)); background = shape(panel,14,Color.parseColor("#394A64"))
         }
         put(login, password, 12)
-        importButton = button("ورود به حساب") { signIn() }
-        put(login, importButton, 12)
-        loginStatus = centered("در حال آماده‌سازی موتور اتصال…", 14, muted)
+        importButton = button(tr("ورود به حساب","Sign in")) { signIn() }
+        val signRow=FrameLayout(this)
+        signRow.addView(importButton,FrameLayout.LayoutParams(-1,dp(54)))
+        loginSpinner=ProgressBar(this).apply {
+            indeterminateTintList=ColorStateList.valueOf(Color.WHITE);visibility=View.GONE
+        }
+        signRow.addView(loginSpinner,FrameLayout.LayoutParams(dp(22),dp(22),Gravity.CENTER))
+        put(login,signRow,16)
+        loginStatus = centered(tr("در حال آماده‌سازی موتور اتصال…","Preparing VPN engine…"), 14, muted)
         put(login, loginStatus, 18)
-        put(login, centered("اختصاصی مشتریان دلتا", 13, muted), 24)
-        put(login, centered("نسخه آزمایشی ۱.۴.۱", 12, muted), 8)
+        login.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
+        put(login,button(tr("زبان: فارسی / English","Language: English / فارسی"),panel){chooseLanguage()},18)
+        val contacts=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
+        contacts.addView(button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd=dp(8) })
+        contacts.addView(button(tr("پشتیبانی","Support"),panel){openContact("support")},LinearLayout.LayoutParams(0,dp(50),1f))
+        put(login,contacts,10)
+        put(login, centered("1.5.0", 11, muted), 20)
 
-        put(dashboard, centered("DELTA VPN", 25, fg, true), 4)
+        val menuButton=button("☰",panel){showDrawer()}
+        menuButton.contentDescription=tr("منوی حساب","Account menu")
+        put(dashboard,menuButton,0,dp(52),dp(48),Gravity.START)
+        dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
+        put(dashboard, centered("DELTA VPN", 30, fg, true), 12)
         val quota = column().apply {
             background = shape(panel, 18); setPadding(dp(16),dp(15),dp(16),dp(15))
         }
-        put(quota, centered("حجم باقی‌مانده اشتراک اختصاصی", 14, muted))
+        put(quota, centered(tr("حجم باقی‌مانده اشتراک اختصاصی","Remaining subscription data"), 14, muted))
         usageText = centered("—", 25, fg, true).apply { textDirection = View.TEXT_DIRECTION_LTR }
         put(quota, usageText, 8)
         usageDetail = centered("—", 12, muted)
@@ -206,47 +262,68 @@ class MainActivity : ComponentActivity() {
             layoutDirection = View.LAYOUT_DIRECTION_LTR
         }
         put(quota, usageBar, 10, -1, dp(8))
-        put(dashboard, quota, 24)
-        expiry = centered("اعتبار: نامشخص", 14, green)
-        put(dashboard, expiry, 13)
+        expiry = centered(tr("اعتبار: نامشخص","Validity: unknown"), 13, green)
+        put(quota, expiry, 10)
 
         connect = ImageButton(this).apply {
             setImageResource(com.v2ray.ang.R.drawable.delta_power)
             scaleType = ImageView.ScaleType.CENTER
             isFocusable = true
-            contentDescription = "اتصال یا قطع اتصال"
+            contentDescription = tr("اتصال یا قطع اتصال","Connect or disconnect")
             setPadding(0,0,0,0)
             stateListAnimator = null; elevation = dp(3).toFloat()
             setOnClickListener { toggle() }
         }
-        put(dashboard, connect, 22, dp(124), dp(124), Gravity.CENTER_HORIZONTAL)
-        status = centered("برای اتصال لمس کنید", 14, muted)
+        put(dashboard, connect, 30, dp(158), dp(158), Gravity.CENTER_HORIZONTAL)
+        status = centered(tr("برای اتصال لمس کنید","Tap to connect"), 14, muted)
         put(dashboard, status, 12)
 
-        val serverHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        serverPicker=button(tr("سرورهای قابل اتصال","Available servers")+"  ▾",panel) {
+            serverSection.visibility=if(serverSection.visibility==View.VISIBLE) View.GONE else View.VISIBLE
         }
-        serverHeader.addView(label("سرورهای اشتراک", 17, fg, true), LinearLayout.LayoutParams(0,-2,1f))
-        pingButton = button("تست پینگ", panel) { testServers() }
-        serverHeader.addView(pingButton, LinearLayout.LayoutParams(dp(112),dp(46)))
-        put(dashboard, serverHeader, 22)
-        servers = column()
-        put(dashboard, servers, 10)
+        put(dashboard,serverPicker,30)
+        serverSection=column().apply { visibility=View.GONE }
+        quickButton=button(tr("⚡ اتصال سریع","⚡ Quick connect")){validateAccount(false,true)}
+        put(serverSection,quickButton,10)
+        pingButton=button(tr("تست پینگ","Test latency"),panel){testServers()}
+        put(serverSection,pingButton,8)
+        servers=column();put(serverSection,servers,8)
+        put(dashboard,serverSection)
+        dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
+        put(dashboard, centered("1.5.0",11,muted),16)
 
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        refreshButton = button("به‌روزرسانی", panel) { validateAccount(false) }
-        clearButton = button("خروج از حساب", panel) { signOut() }
-        actions.addView(refreshButton, LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd = dp(8) })
-        actions.addView(clearButton, LinearLayout.LayoutParams(0,dp(50),1f))
-        put(dashboard, actions, 16)
-        put(dashboard, centered("نسخه ۱.۴.۱ · Xray / v2rayNG · GPL-3.0", 11, muted), 20)
+        drawer=FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt());visibility=View.GONE;setOnClickListener{hideDrawer()} }
+        val drawerScroll=ScrollView(this).apply { isFillViewport=true;setBackgroundColor(navy);isClickable=true }
+        val width=minOf(dp(320),(resources.displayMetrics.widthPixels*0.86f).toInt())
+        drawer.addView(drawerScroll,FrameLayout.LayoutParams(width,-1,Gravity.START))
+        val menu=column().apply {setPadding(dp(16),dp(16),dp(16),dp(18));isClickable=true}
+        drawerScroll.addView(menu)
+        put(menu,centered(tr("حساب کاربری","My account"),19,fg,true))
+        put(menu,quota,18)
+        accountName=centered("—",14,fg,true);put(menu,accountName,16)
+        put(menu,button(tr("تغییر زبان","Change language"),panel){chooseLanguage()},18)
+        put(menu,button(tr("پشتیبانی","Support"),panel){openContact("support")},10)
+        put(menu,button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},10)
+        refreshButton=button(tr("به‌روزرسانی","Refresh"),panel){validateAccount(false)}
+        put(menu,refreshButton,10)
+        clearButton=button(tr("خروج از حساب","Sign out"),Color.parseColor("#A52F42")){requestSignOut()}
+        put(menu,clearButton,10)
+        put(menu,centered("Xray / v2rayNG · GPL-3.0",10,muted),16)
+        shell.addView(drawer,FrameLayout.LayoutParams(-1,-1))
+        onBackPressedDispatcher.addCallback(this,object:OnBackPressedCallback(true){
+            override fun handleOnBackPressed(){
+                if(drawer.visibility==View.VISIBLE)hideDrawer()
+                else if(serverSection.visibility==View.VISIBLE)serverSection.visibility=View.GONE
+                else {isEnabled=false;onBackPressedDispatcher.onBackPressed();isEnabled=true}
+            }
+        })
         ContextCompat.registerReceiver(this, receiver, IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY), ContextCompat.RECEIVER_NOT_EXPORTED)
-        render("در حال آماده‌سازی موتور اتصال…")
+        render(tr("در حال آماده‌سازی موتور اتصال…","Preparing VPN engine…"))
         lifecycleScope.launch {
             try {
                 withContext(Dispatchers.IO) { SettingsManager.initAssets(this@MainActivity, assets) }
-                ready = true; render("در انتظار بررسی وضعیت اتصال…"); queryState()
-            } catch (_: Exception) { starting = false; render("آماده‌سازی موتور اتصال ناموفق بود.") }
+                ready = true; render(tr("در انتظار بررسی وضعیت اتصال…","Checking VPN status…")); queryState()
+            } catch (_: Exception) { starting = false; render(tr("آماده‌سازی موتور اتصال ناموفق بود.","VPN engine initialization failed.")) }
         }
         timer.post(expiryTick)
         if (android.os.Build.VERSION.SDK_INT >= 33 &&
@@ -255,7 +332,45 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); if (ready) queryState() }
+    override fun onResume() { super.onResume(); motion.active=true;motion.invalidate(); if (ready) queryState() }
+    override fun onPause() { motion.active=false;super.onPause() }
+    private fun showDrawer() {
+        drawer.visibility=View.VISIBLE
+        val child=drawer.getChildAt(0)
+        child.translationX=if(english)-child.width.toFloat() else child.width.toFloat()
+        child.animate().translationX(0f).setDuration(220).start()
+    }
+    private fun hideDrawer(){drawer.visibility=View.GONE}
+    private fun chooseLanguage() {
+        if(busy||transitioning||pingRequest!=null){Toast.makeText(this,tr("ابتدا عملیات فعلی را تمام کنید.","Finish the current operation first."),Toast.LENGTH_SHORT).show();return}
+        AlertDialog.Builder(this).setTitle(tr("انتخاب زبان","Choose language"))
+            .setSingleChoiceItems(arrayOf("فارسی","English"),if(english)1 else 0){ dialog,index ->
+                dialog.dismiss()
+                if((index==1)!=english){
+                    getSharedPreferences("delta_ui",Context.MODE_PRIVATE).edit().putString("language",if(index==1)"en" else "fa").apply()
+                    recreate()
+                }
+            }.setNegativeButton(tr("انصراف","Cancel"),null).show()
+    }
+    private fun openContact(kind:String){
+        if(openingContact)return
+        openingContact=true
+        lifecycleScope.launch {
+            val result=withContext(Dispatchers.IO){runCatching{accountApi.contacts()[kind].orEmpty()}}
+            openingContact=false
+            result.onSuccess { name ->
+                if(name.isBlank())Toast.makeText(this@MainActivity,tr("آیدی هنوز تنظیم نشده است.","This contact is not configured yet."),Toast.LENGTH_LONG).show()
+                else runCatching {startActivity(Intent(Intent.ACTION_VIEW,Uri.parse("https://t.me/"+name)))}
+                    .onFailure{Toast.makeText(this@MainActivity,tr("باز کردن تلگرام ناموفق بود.","Unable to open Telegram."),Toast.LENGTH_LONG).show()}
+            }.onFailure{Toast.makeText(this@MainActivity,tr("دریافت آیدی ناموفق بود؛ دوباره تلاش کنید.","Could not load contact. Try again."),Toast.LENGTH_LONG).show()}
+        }
+    }
+    private fun requestSignOut(){
+        if(busy||transitioning||pingRequest!=null)return
+        if(running){
+            logoutPending=true;toggle()
+        }else signOut()
+    }
     override fun onDestroy() {
         if (pingRequest != null) MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
         timer.removeCallbacksAndMessages(null)
@@ -273,12 +388,12 @@ class MainActivity : ComponentActivity() {
                 running = false
                 transitioning = false
                 timer.removeCallbacks(timeout)
-                render(if (busy) null else if (account == null) "نام کاربری و رمز عبور را وارد کنید." else "برای اتصال لمس کنید"); maybeRestore()
+                render(if (busy) null else if (account == null) tr("نام کاربری و رمز عبور را وارد کنید.","Enter username and password.") else tr("برای اتصال لمس کنید","Tap to connect")); maybeRestore()
             } else if (!stateKnown) {
                 timer.postDelayed({
                     if (!isFinishing && !isDestroyed && generation == stateQueryGeneration && !stateKnown) {
                         starting = false
-                        render("وضعیت سرویس نامشخص است؛ یک بار دوباره تلاش کنید.")
+                        render(tr("وضعیت سرویس نامشخص است؛ یک بار دوباره تلاش کنید.","VPN state unknown. Please retry."))
                     }
                 }, 3000)
             }
@@ -311,18 +426,29 @@ class MainActivity : ComponentActivity() {
         setStroke(dp(3), if (active) green else Color.parseColor("#5A9AFF"))
     }
     private fun gb(bytes: Long): String = String.format(Locale.US, "%.1f", bytes.coerceAtLeast(0) / 1073741824.0)
-    private fun testServers() {
+    private fun testServers(quick:Boolean=false) {
         if (pingRequest != null || busy || transitioning || running || repo.servers.isEmpty()) return
         val id = java.util.UUID.randomUUID().toString()
-        pingRequest = id; delays.clear(); render("در حال تست واقعی سرورها…")
+        quickMode=quick
+        pingRequest = id; delays.clear(); render(if(quick)tr("در حال یافتن سریع‌ترین سرور…","Finding the fastest server…") else tr("در حال تست واقعی سرورها…","Testing servers…"))
         MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_START, repo.group, repo.servers), id)
         timer.postDelayed({
             if (pingRequest == id) {
-                pingRequest = null
+                pingRequest = null;quickMode=false
                 MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
-                render("مهلت تست پینگ پایان یافت.")
+                render(tr("مهلت تست پینگ پایان یافت.","Server test timed out."))
             }
         }, 180000)
+    }
+    private fun finishQuick(){
+        quickMode=false
+        val best=delays.entries.filter{it.value>0&&it.key in repo.servers}.minByOrNull{it.value}
+        if(best==null||account?.canConnect!=true||(account?.remainingSeconds()?:0)<=0){render(tr("هیچ سرور قابل اتصال پیدا نشد.","No reachable server found."));return}
+        MmkvManager.setSelectServer(best.key)
+        serverSection.visibility=View.GONE
+        render(tr("سریع‌ترین سرور انتخاب شد.","Fastest server selected."))
+        val request=VpnService.prepare(this)
+        if(request==null)startTunnel() else permission.launch(request)
     }
     private fun label(t: String, size: Int, color: Int, bold: Boolean = false) = TextView(this).apply {
         text = t; textSize = size.toFloat(); setTextColor(color)
@@ -337,15 +463,16 @@ class MainActivity : ComponentActivity() {
     }
     private fun render(message: String? = null) {
         val hasSub = running || account != null
+        if(!hasSub)hideDrawer()
         startup.visibility = if (starting) View.VISIBLE else View.GONE
         root.gravity = if (starting) Gravity.CENTER_VERTICAL else Gravity.TOP
         login.visibility = if (!starting && !hasSub) View.VISIBLE else View.GONE
         dashboard.visibility = if (!starting && hasSub) View.VISIBLE else View.GONE
-        if (starting) startupStatus.text = if (busy) "در حال ورود خودکار…" else "در حال آماده‌سازی…"
+        if (starting) startupStatus.text = if (busy) tr("در حال ورود خودکار…","Signing in automatically…") else tr("در حال آماده‌سازی…","Preparing…")
         message?.let { status.text = it; loginStatus.text = it }
-        if (running && !transitioning && message == null) status.text = "تونل VPN فعال است"
+        if (running && !transitioning && message == null) status.text = tr("تونل VPN فعال است","VPN is connected")
         connect.background = powerBackground(running)
-        connect.contentDescription = if (running) "قطع اتصال" else "اتصال"
+        connect.contentDescription = if (running) tr("قطع اتصال","Disconnect") else tr("اتصال","Connect")
         connect.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest == null && (running || (account?.canConnect == true && repo.canConnect()))
         connect.alpha = if (connect.isEnabled) 1f else 0.55f
         status.setTextColor(if (running) green else muted)
@@ -353,16 +480,22 @@ class MainActivity : ComponentActivity() {
         val loginEditable = !busy && !running && !transitioning
         importButton.isEnabled = loginEditable; input.isEnabled = loginEditable; password.isEnabled = loginEditable
         refreshButton.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest == null && account != null
-        clearButton.isEnabled = editable && account != null
+        clearButton.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest==null && account!=null
+        quickButton.isEnabled=editable && account?.canConnect==true && repo.servers.isNotEmpty()
+        accountName.text=tr("نام کاربری: ","Username: ")+(account?.username?:"—")
+        loginSpinner.visibility=if(manualLogin)View.VISIBLE else View.GONE
+        importButton.text=if(manualLogin)"" else tr("ورود به حساب","Sign in")
+        if(manualLogin){importButton.animate().scaleX(0.97f).scaleY(0.97f).setDuration(160).start()}
+        else {importButton.animate().scaleX(1f).scaleY(1f).setDuration(180).start()}
         pingButton.isEnabled = editable && hasSub && account != null
-        pingButton.text = if (pingRequest != null) "در حال تست…" else "تست پینگ"
+        pingButton.text = if (pingRequest != null) tr("در حال تست…","Testing…") else tr("تست پینگ","Test latency")
 
         val current = account
         usageText.text = current?.let { "${gb(it.remainingBytes)} / ${it.gb} GB" } ?: "—"
         usageDetail.text = current?.let {
             val age = ((android.os.SystemClock.elapsedRealtime()-it.receivedElapsed).coerceAtLeast(0)/1000)
-            "مصرف: ${gb(it.usedBytes)} GB · آخرین دریافت: ${age} ثانیه قبل"
-        } ?: "مصرف: نامشخص"
+            tr("مصرف: ${gb(it.usedBytes)} GB · آخرین دریافت: ${age} ثانیه قبل","Used: ${gb(it.usedBytes)} GB · Updated ${age}s ago")
+        } ?: tr("مصرف: نامشخص","Usage: unknown")
         usageBar.visibility = if (current == null) View.GONE else View.VISIBLE
         usageBar.progress = current?.let { (it.remainingBytes.toDouble()/it.limitBytes*1000).toInt().coerceIn(0,1000) } ?: 0
         updateExpiry()
@@ -386,7 +519,7 @@ class MainActivity : ComponentActivity() {
                 setPadding(dp(12),dp(11),dp(12),dp(11))
                 background = shape(panel,12, if (chosen) blue else null)
                 isClickable = editable; isFocusable = editable
-                setOnClickListener { if (editable) { MmkvManager.setSelectServer(id); render("سرور انتخاب شد.") } }
+                setOnClickListener { if (editable) { MmkvManager.setSelectServer(id); render(tr("سرور انتخاب شد.","Server selected.")) } }
             }
             val dot = View(this).apply { background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL; setColor(if (chosen) blue else color)
@@ -404,9 +537,9 @@ class MainActivity : ComponentActivity() {
         val a = account
         val left = a?.remainingSeconds() ?: 0
         expiry.text = when {
-            a == null -> "اعتبار: اعلام نشده"
-            left == 0L -> "اعتبار به پایان رسیده"
-            else -> "${left/86400} روز و ${left%86400/3600} ساعت و ${left%3600/60} دقیقه و ${left%60} ثانیه"
+            a == null -> tr("اعتبار: اعلام نشده","Validity: unknown")
+            left == 0L -> tr("اعتبار به پایان رسیده","Subscription expired")
+            else -> tr("${left/86400} روز و ${left%86400/3600} ساعت و ${left%3600/60} دقیقه و ${left%60} ثانیه","${left/86400}d ${left%86400/3600}h ${left%3600/60}m ${left%60}s")
         }
         expiry.setTextColor(if (a == null) muted else if (left == 0L) red else green)
     }
@@ -418,7 +551,7 @@ class MainActivity : ComponentActivity() {
             if (a != null && a.remainingSeconds() == 0L) {
                 account = null; sessionStore.clear()
                 if (running || transitioning) LauncherManager.stopService(this@MainActivity) else repo.clear()
-                render("اعتبار حساب به پایان رسیده است.")
+                render(tr("اعتبار حساب به پایان رسیده است.","Your subscription has expired."))
             }
             val now = android.os.SystemClock.elapsedRealtime()
             if (running && account != null && !busy && !transitioning && now-lastPoll>=60000L) {
@@ -434,11 +567,11 @@ class MainActivity : ComponentActivity() {
         val token = sessionStore.read()
         if (token == null) {
             starting = false
-            render(if (running) "تونل VPN فعال است" else "نام کاربری و رمز عبور را وارد کنید.")
+            render(if (running) tr("تونل VPN فعال است","VPN is connected") else tr("نام کاربری و رمز عبور را وارد کنید.","Enter username and password."))
             return
         }
         starting = true
-        busy = true; render("در حال ورود خودکار…")
+        busy = true; render(tr("در حال ورود خودکار…","Signing in automatically…"))
         val wasRunning = running
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
@@ -448,12 +581,12 @@ class MainActivity : ComponentActivity() {
             } }
             busy = false
             starting = false
-            result.onSuccess { account = it; if (!it.canConnect && running) LauncherManager.stopService(this@MainActivity); render(if (it.canConnect) "به دلتا خوش آمدید" else "اشتراک فعال قابل اتصال نیست.") }.onFailure {
+            result.onSuccess { account = it; if (!it.canConnect && running) LauncherManager.stopService(this@MainActivity); render(if (it.canConnect) tr("به دلتا خوش آمدید","Welcome to Delta") else tr("اشتراک فعال قابل اتصال نیست.","Subscription cannot connect.")) }.onFailure {
                 val invalid = it is DeltaApiException && it.status in listOf(401, 409)
                 if (invalid) sessionStore.clear()
                 if (running) LauncherManager.stopService(this@MainActivity)
                 else repo.clear()
-                render(if (invalid) "نشست منقضی یا لغو شده؛ دوباره وارد شوید." else "ورود خودکار ناموفق بود؛ برای تلاش دوباره ورود را بزنید.")
+                render(if (invalid) tr("نشست منقضی یا لغو شده؛ دوباره وارد شوید.","Session expired or revoked. Sign in again.") else tr("ورود خودکار ناموفق بود؛ برای تلاش دوباره ورود را بزنید.","Automatic sign-in failed. Tap Sign in to retry."))
             }
         }
     }
@@ -463,23 +596,23 @@ class MainActivity : ComponentActivity() {
     }
     private fun signIn() {
         if (busy || running || transitioning) return
-        if (!ready) { render("موتور اتصال هنوز آماده نیست؛ دوباره تلاش کنید."); return }
-        if (!stateKnown) { render("در حال بررسی وضعیت سرویس…"); queryState(); return }
+        if (!ready) { render(tr("موتور اتصال هنوز آماده نیست؛ دوباره تلاش کنید.","VPN engine is not ready. Try again.")); return }
+        if (!stateKnown) { render(tr("در حال بررسی وضعیت سرویس…","Checking VPN service…")); queryState(); return }
         if (sessionStore.read() != null && input.text.isBlank() && password.text.isBlank()) { maybeRestore(true); return }
         val name = input.text.toString().trim()
         val secret = password.text.toString()
-        if (name.isBlank() || secret.isBlank()) { render("نام کاربری و رمز عبور را وارد کنید."); return }
+        if (name.isBlank() || secret.isBlank()) { render(tr("نام کاربری و رمز عبور را وارد کنید.","Enter username and password.")); return }
         password.text.clear()
-        busy = true; render("در حال ورود…")
+        manualLogin=true;busy = true; render(tr("در حال ورود…","Signing in…"))
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
                 repo.clear()
                 val a = accountApi.login(name, secret)
                 try { checkedImport(a); sessionStore.save(a.token); a } catch (e: Exception) { repo.clear(); runCatching { accountApi.logout(a.token) }; throw e }
             } }
-            busy = false
-            result.onSuccess { account = it; delays.clear(); input.text.clear(); render(if (repo.servers.isEmpty()) "کانفیگ اختصاصی فعال در دسترس نیست." else "به دلتا خوش آمدید") }
-                .onFailure { account = null; render("ورود یا دریافت اشتراک ناموفق بود؛ حساب و تنظیمات سرور را بررسی کنید.") }
+            busy = false;manualLogin=false
+            result.onSuccess { account = it; delays.clear(); input.text.clear(); render(if (repo.servers.isEmpty()) tr("کانفیگ اختصاصی فعال در دسترس نیست.","No active dedicated server available.") else tr("به دلتا خوش آمدید","Welcome to Delta")) }
+                .onFailure { account = null; render(tr("ورود یا دریافت اشتراک ناموفق بود؛ حساب و تنظیمات سرور را بررسی کنید.","Sign-in or subscription loading failed. Check account and server settings.")) }
         }
     }
     private fun pollUsage() {
@@ -492,23 +625,23 @@ class MainActivity : ComponentActivity() {
             result.onSuccess { updated ->
                 account=updated
                 if (!updated.canConnect && running) LauncherManager.stopService(this@MainActivity)
-                render(if (!updated.canConnect) "حجم یا اعتبار یا دسترسی اشتراک به پایان رسیده است." else null)
+                render(if (!updated.canConnect) tr("حجم یا اعتبار یا دسترسی اشتراک به پایان رسیده است.","Subscription data, validity or access has ended.") else null)
             }.onFailure {
                 if (it is DeltaApiException && it.status==401) {
                     account=null;sessionStore.clear()
                     if(running) LauncherManager.stopService(this@MainActivity) else repo.clear()
-                    render("نشست لغو شده است.")
+                    render(tr("نشست لغو شده است.","Session revoked."))
                 } else {
-                    render("دریافت مصرف از پنل ناموفق بود؛ آخرین مقدار نمایش داده می‌شود.")
+                    render(tr("دریافت مصرف از پنل ناموفق بود؛ آخرین مقدار نمایش داده می‌شود.","Usage refresh failed. Last known value shown."))
                 }
             }
         }
     }
-    private fun validateAccount(connectAfter: Boolean) {
+    private fun validateAccount(connectAfter: Boolean,quickAfter:Boolean=false) {
         val previous = account ?: return
         if (busy || transitioning || pingRequest != null) return
-        if (running) { if (!connectAfter) pollUsage(); return }
-        busy = true; render("در حال بررسی اعتبار حساب…")
+        if (running) { if (!connectAfter && !quickAfter) pollUsage(); return }
+        busy = true; render(tr("در حال بررسی اعتبار حساب…","Checking subscription…"))
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
                 val updated = accountApi.session(previous.token)
@@ -517,28 +650,29 @@ class MainActivity : ComponentActivity() {
             } }
             busy = false
             result.onSuccess {
-                account = it; delays.clear(); render(if (repo.servers.isEmpty()) "کانفیگ اختصاصی فعال در دسترس نیست." else "اعتبار حساب تأیید شد.")
-                if (connectAfter && it.canConnect && repo.canConnect()) {
+                account = it; delays.clear(); render(if (repo.servers.isEmpty()) tr("کانفیگ اختصاصی فعال در دسترس نیست.","No active dedicated server available.") else tr("اعتبار حساب تأیید شد.","Subscription verified."))
+                if(quickAfter && it.canConnect && repo.servers.isNotEmpty())testServers(true)
+                else if (connectAfter && it.canConnect && repo.canConnect()) {
                     val request = VpnService.prepare(this@MainActivity)
                     if (request == null) startTunnel() else permission.launch(request)
                 }
             }.onFailure {
                 account = null; repo.clear(); delays.clear()
                 if (it is DeltaApiException && it.status == 401) sessionStore.clear()
-                render("اعتبار حساب یا اتصال به سرور تأیید نشد؛ دوباره تلاش کنید.")
+                render(tr("اعتبار حساب یا اتصال به سرور تأیید نشد؛ دوباره تلاش کنید.","Account or server verification failed. Try again."))
             }
         }
     }
     private fun signOut() {
         if (busy || running || transitioning || pingRequest != null) return
         val previous = account
-        account = null; sessionStore.clear(); repo.clear(); delays.clear(); input.text.clear(); password.text.clear()
-        render("از حساب خارج شدید.")
+        account = null; sessionStore.clear(); repo.clear(); delays.clear(); input.text.clear(); password.text.clear();hideDrawer();serverSection.visibility=View.GONE
+        render(tr("از حساب خارج شدید.","Signed out."))
         if (previous != null) lifecycleScope.launch(Dispatchers.IO) { runCatching { accountApi.logout(previous.token) } }
     }
     private fun toggle() {
         if (running) {
-            transitioning = true; render("در حال قطع اتصال…")
+            transitioning = true; render(tr("در حال قطع اتصال…","Disconnecting…"))
             LauncherManager.stopService(this); timer.postDelayed(timeout, 15000)
         } else if (account != null && repo.canConnect()) {
             validateAccount(true)
@@ -547,9 +681,34 @@ class MainActivity : ComponentActivity() {
     private fun startTunnel() {
         if (account?.canConnect != true || (account?.remainingSeconds() ?: 0) <= 0 || !repo.canConnect()) return
         MmkvManager.encodeSettings(AppConfig.PREF_MODE, AppConfig.VPN)
-        transitioning = true; render("در حال اتصال…")
+        transitioning = true; render(tr("در حال اتصال…","Connecting…"))
         if (!LauncherManager.startServiceFromToggle(this, account?.deadlineElapsed ?: 0L)) {
-            transitioning = false; render("شروع سرویس ناموفق بود.")
+            transitioning = false; render(tr("شروع سرویس ناموفق بود.","VPN service could not start."))
         } else timer.postDelayed(timeout, 20000)
+    }
+}
+
+/** Lightweight animated aurora behind both screens; no network or image assets. */
+private class DeltaMotionView(context:Context):View(context){
+    var active=false
+    private val paint=Paint(Paint.ANTI_ALIAS_FLAG)
+    override fun onDraw(canvas:Canvas){
+        super.onDraw(canvas)
+        if(width<=0||height<=0)return
+        canvas.drawColor(Color.parseColor("#0D1524"))
+        val enabled=android.os.Build.VERSION.SDK_INT<26||ValueAnimator.areAnimatorsEnabled()
+        val t=if(enabled)android.os.SystemClock.elapsedRealtime()/7000.0 else 0.0
+        val w=width.toFloat();val h=height.toFloat()
+        for(i in 0..2){
+            val phase=t+i*2.1
+            val x=w*(0.5f+0.35f*kotlin.math.sin(phase).toFloat())
+            val y=h*(0.22f+i*0.25f+0.11f*kotlin.math.cos(phase*0.72).toFloat())
+            val color=when(i){0->0x603478F6;1->0x404D39BA;else->0x3027C6BD}
+            val radius=maxOf(w,h)*0.47f
+            paint.shader=RadialGradient(x,y,radius,intArrayOf(color,0x000D1524),null,Shader.TileMode.CLAMP)
+            canvas.drawRect(0f,0f,w,h,paint)
+        }
+        paint.shader=null
+        if(active&&enabled&&isShown)postInvalidateDelayed(40)
     }
 }

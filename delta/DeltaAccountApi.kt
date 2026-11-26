@@ -40,6 +40,12 @@ class DeltaAccountApi {
             a.expires > a.serverNow && a.expires-a.serverNow <= 3650L*86400L)
         return a
     }
+    fun contacts(): Map<String,String> {
+        val r=call(JsonObject().apply { addProperty("action","public_config") })
+        return listOf("purchase","support").associateWith { k ->
+            r.get(k)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.matches(Regex("[A-Za-z][A-Za-z0-9_]{4,31}")) } ?: ""
+        }
+    }
     fun login(name: String, password: String) = decode(call(JsonObject().apply {
         addProperty("action","login"); addProperty("username",name); addProperty("password",password)
     }))
