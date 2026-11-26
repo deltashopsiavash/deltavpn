@@ -2,6 +2,10 @@ package com.v2ray.ang.ui.main
 
 import android.content.BroadcastReceiver
 import android.app.AlertDialog
+import android.app.Dialog
+import android.graphics.drawable.ColorDrawable
+import com.v2ray.ang.delta.DeltaNewsItem
+import com.v2ray.ang.delta.DeltaNewsFeed
 import android.animation.ValueAnimator
 import android.content.res.Configuration
 import android.graphics.Canvas
@@ -92,6 +96,18 @@ class MainActivity : ComponentActivity() {
     private lateinit var loginStatus: TextView
     private lateinit var usageText: TextView
     private lateinit var usageDetail: TextView
+    private lateinit var newsBell: Button
+    private lateinit var newsBadge: TextView
+    private var newsToken: String? = null
+    private var newsFeed: DeltaNewsFeed? = null
+    private var newsLoading = false
+    private var newsGeneration = 0
+    private var newsLastPoll = 0L
+    private var newsDialog: Dialog? = null
+    private var floatingDialog: Dialog? = null
+    private val floatingShown = mutableSetOf<Long>()
+    private var newsForeground = false
+
     private var usageStale=false
     private fun deviceId():String {
         val prefs=getSharedPreferences("delta_device",Context.MODE_PRIVATE)
@@ -289,11 +305,26 @@ class MainActivity : ComponentActivity() {
         contacts.addView(button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd=dp(8) })
         contacts.addView(button(tr("پشتیبانی","Support"),panel){openContact("support")},LinearLayout.LayoutParams(0,dp(50),1f))
         put(login,contacts,10)
-        put(login, centered("v1.6.1", 11, muted), 20)
+        put(login, centered("v1.7.0", 11, muted), 20)
 
         val menuButton=button("☰",panel){showDrawer()}
         menuButton.contentDescription=tr("منوی حساب","Account menu")
-        put(dashboard,menuButton,0,dp(52),dp(48),Gravity.START)
+        val header=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
+        header.addView(menuButton,LinearLayout.LayoutParams(dp(52),dp(48)))
+        header.addView(View(this),LinearLayout.LayoutParams(0,1,1f))
+        val bellFrame=FrameLayout(this)
+        newsBell=button("🔔",panel){showNewsInbox()}.apply{
+            contentDescription=tr("اطلاع‌رسانی","Announcements")
+        }
+        bellFrame.addView(newsBell,FrameLayout.LayoutParams(dp(52),dp(48),Gravity.CENTER))
+        newsBadge=centered("",11,Color.WHITE,true).apply{
+            background=shape(red,12);minWidth=dp(22);setPadding(dp(4),0,dp(4),0)
+            visibility=View.GONE;isClickable=false;isFocusable=false
+            gravity=Gravity.CENTER
+        }
+        bellFrame.addView(newsBadge,FrameLayout.LayoutParams(-2,dp(20),Gravity.TOP or Gravity.END))
+        header.addView(bellFrame,LinearLayout.LayoutParams(dp(58),dp(52)))
+        put(dashboard,header)
         put(dashboard, centered("DELTA VPN", 30, fg, true), 0)
         put(dashboard, roundLogo(), 14, dp(78), dp(78), Gravity.CENTER_HORIZONTAL)
         dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,0.65f))
@@ -345,7 +376,7 @@ class MainActivity : ComponentActivity() {
         servers=column();put(serverSection,servers,8)
         put(dashboard,serverSection)
         dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
-        put(dashboard, centered("v1.6.1",11,muted),16)
+        put(dashboard, centered("v1.7.0",11,muted),16)
 
         drawer=FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt());visibility=View.GONE;setOnClickListener{hideDrawer()} }
         val drawerScroll=ScrollView(this).apply { isFillViewport=true;setBackgroundColor(navy);isClickable=true }
@@ -364,7 +395,7 @@ class MainActivity : ComponentActivity() {
         put(menu,refreshButton,10)
         clearButton=button(tr("خروج از حساب","Sign out"),Color.parseColor("#A52F42")){requestSignOut()}
         put(menu,clearButton,10)
-        put(menu,centered("v1.6.1",11,muted),16)
+        put(menu,centered("v1.7.0",11,muted),16)
         shell.addView(drawer,FrameLayout.LayoutParams(-1,-1))
         deviceScreen=FrameLayout(this).apply{setBackgroundColor(navy);visibility=View.GONE;isClickable=true}
         val deviceScroll=ScrollView(this).apply{isFillViewport=true}
@@ -395,8 +426,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); motion.active=true;motion.invalidate(); if (ready) queryState() }
-    override fun onPause() { motion.active=false;super.onPause() }
+    override fun onResume() { super.onResume(); newsForeground=true;motion.active=true;motion.invalidate(); if (ready) queryState(); refreshNews(true) }
+    override fun onPause() { newsForeground=false;motion.active=false;super.onPause() }
     private fun showDrawer() {
         drawer.visibility=View.VISIBLE
         val child=drawer.getChildAt(0)
@@ -435,7 +466,7 @@ class MainActivity : ComponentActivity() {
         }else signOut()
     }
     override fun onDestroy() {
-        powerPulse?.cancel();powerPulse=null
+        newsForeground=false;clearNews();powerPulse?.cancel();powerPulse=null
         if (pingRequest != null) MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
         timer.removeCallbacksAndMessages(null)
         MessageHelper.sendMsg2Service(this, AppConfig.MSG_UNREGISTER_CLIENT, "")
@@ -489,7 +520,7 @@ class MainActivity : ComponentActivity() {
         shape = GradientDrawable.OVAL
         setStroke(dp(3), if (active) green else Color.parseColor("#5A9AFF"))
     }
-    private fun gb(bytes: Long): String = String.format(Locale.US, "%.1f", bytes.coerceAtLeast(0) / 1073741824.0)
+    private fun gb(bytes: Long): String = String.format(Locale.US, "%.3f", bytes.coerceAtLeast(0) / 1073741824.0).trimEnd('0').trimEnd('.')
     private fun testServers(quick:Boolean=false) {
         if (pingRequest != null || busy || transitioning || running || repo.servers.isEmpty()) return
         val id = java.util.UUID.randomUUID().toString()
@@ -550,6 +581,7 @@ class MainActivity : ComponentActivity() {
         clearButton.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest==null && account!=null
         quickButton.isEnabled=editable && account?.canConnect==true && repo.servers.isNotEmpty()
         accountName.text=tr("نام کاربری: ","Username: ")+(account?.username?:"—")
+        syncNewsIdentity()
         loginSpinner.visibility=if(manualLogin)View.VISIBLE else View.GONE
         importButton.text=if(manualLogin)"" else tr("ورود به حساب","Sign in")
         if(manualLogin){importButton.animate().scaleX(0.97f).scaleY(0.97f).setDuration(160).start()}
@@ -593,9 +625,184 @@ class MainActivity : ComponentActivity() {
             put(servers,row,8)
         }
     }
+    private fun clearNews(){
+        newsGeneration++;newsLoading=false;newsToken=null;newsFeed=null;newsLastPoll=0L;floatingShown.clear()
+        val inbox=newsDialog;newsDialog=null;inbox?.dismiss()
+        val floating=floatingDialog;floatingDialog=null;floating?.dismiss()
+        if(::newsBadge.isInitialized)newsBadge.visibility=View.GONE
+    }
+    private fun syncNewsIdentity(){
+        val token=account?.token
+        if(token!=newsToken){
+            clearNews()
+            newsToken=token
+            if(token!=null)refreshNews(true)
+        }
+        if(::newsBell.isInitialized)newsBell.isEnabled=token!=null
+    }
+    private fun updateNewsBadge(){
+        if(!::newsBadge.isInitialized)return
+        val n=newsFeed?.unread?:0
+        newsBadge.visibility=if(n>0)View.VISIBLE else View.GONE
+        newsBadge.text=if(n>99)"99+" else n.toString()
+        newsBell.contentDescription=tr("اطلاع‌رسانی، $n خوانده نشده","Announcements, $n unread")
+    }
+    private fun refreshNews(force:Boolean=false){
+        val token=account?.token?:return
+        if(!newsForeground||newsLoading||newsToken!=token)return
+        val now=android.os.SystemClock.elapsedRealtime()
+        if(!force&&now-newsLastPoll<30000L)return
+        newsLoading=true;newsLastPoll=now
+        val generation=newsGeneration
+        lifecycleScope.launch {
+            val result=withContext(Dispatchers.IO){runCatching{accountApi.news(token)}}
+            if(generation!=newsGeneration||account?.token!=token)return@launch
+            newsLoading=false
+            result.onSuccess{feed->newsFeed=feed;updateNewsBadge();maybeShowFloating()}
+        }
+    }
+    private fun newsDate(t:Long):String = java.text.SimpleDateFormat("yyyy/MM/dd  HH:mm",Locale.US).apply{
+        timeZone=java.util.TimeZone.getTimeZone("Asia/Tehran")
+    }.format(java.util.Date(t*1000L))
+    private fun openNewsLink(item:DeltaNewsItem){
+        if(item.url.isBlank())return
+        // Only explicit user taps open validated HTTPS links. No APK auto-install.
+        runCatching{startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(item.url)))}
+            .onFailure{Toast.makeText(this,tr("باز کردن لینک ناموفق بود.","Unable to open link."),Toast.LENGTH_SHORT).show()}
+    }
+    private fun newsCard(title:String,subtitle:String?=null):Pair<Dialog,LinearLayout>{
+        val d=Dialog(this)
+        val content=column().apply {
+            layoutDirection=if(english)View.LAYOUT_DIRECTION_LTR else View.LAYOUT_DIRECTION_RTL
+            background=shape(panel,24,Color.parseColor("#344A6D"))
+            setPadding(dp(20),dp(20),dp(20),dp(18))
+        }
+        put(content,centered(title,20,fg,true))
+        if(subtitle!=null)put(content,centered(subtitle,12,muted),8)
+        d.setContentView(content)
+        d.setCanceledOnTouchOutside(false)
+        return d to content
+    }
+    private fun displayNewsDialog(d:Dialog){
+        if(isFinishing||isDestroyed)return
+        d.show()
+        d.window?.apply{
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setLayout(minOf(dp(430),(resources.displayMetrics.widthPixels-dp(32)).coerceAtLeast(dp(240))),-2)
+            setGravity(Gravity.CENTER)
+            addFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            setDimAmount(0.68f)
+        }
+    }
+    private fun newsBody(parent:LinearLayout,body:String){
+        val scroll=ScrollView(this).apply { isFillViewport=false; overScrollMode=View.OVER_SCROLL_IF_CONTENT_SCROLLS }
+        val text=label(body,15,fg).apply{
+            gravity=Gravity.START;setLineSpacing(dp(5).toFloat(),1.05f);textIsSelectable=true
+            setPadding(dp(14),dp(12),dp(14),dp(12));background=shape(navy,16)
+        }
+        scroll.addView(text)
+        val max=(resources.displayMetrics.heightPixels*0.40).toInt().coerceAtLeast(dp(120))
+        text.measure(View.MeasureSpec.makeMeasureSpec((resources.displayMetrics.widthPixels-dp(84)).coerceAtLeast(dp(160)),View.MeasureSpec.AT_MOST),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED))
+        put(parent,scroll,16,-1,minOf(max,text.measuredHeight.coerceAtLeast(dp(72))))
+    }
+    private fun acknowledgeNews(item:DeltaNewsItem,floating:Boolean,onDone:(Boolean)->Unit){
+        val token=account?.token?:return
+        // Invalidate an in-flight poll so an older response cannot restore an unread badge.
+        newsGeneration++;val requestGeneration=newsGeneration;newsLoading=true
+        lifecycleScope.launch {
+            val result=withContext(Dispatchers.IO){runCatching{accountApi.acknowledgeNews(token,item.id,floating)}}
+            if(requestGeneration!=newsGeneration||account?.token!=token)return@launch
+            newsLoading=false
+            result.onSuccess{newsFeed=it;updateNewsBadge()}
+            if(result.isFailure)Toast.makeText(this@MainActivity,tr("ثبت وضعیت خبر ناموفق بود؛ دوباره تلاش کنید.","Could not save announcement status. Try again."),Toast.LENGTH_SHORT).show()
+            onDone(result.isSuccess)
+        }
+    }
+    private fun showNewsInbox(){
+        val token=account?.token?:return
+        if(newsDialog?.isShowing==true||floatingDialog?.isShowing==true)return
+        val (d,content)=newsCard(tr("🔔 اطلاع‌رسانی","🔔 Announcements"),tr("آخرین خبرهای دلتا","Latest Delta news"))
+        newsDialog=d
+        val scroll=ScrollView(this)
+        val items=column()
+        scroll.addView(items)
+        put(content,scroll,16,-1,minOf(dp(440),(resources.displayMetrics.heightPixels*0.50).toInt()))
+        val close=button(tr("بستن","Close"),navy){d.dismiss()}
+        put(content,close,14)
+        d.setOnDismissListener{if(newsDialog===d){newsDialog=null;maybeShowFloating()}}
+        fun renderPage(feed:DeltaNewsFeed,append:Boolean){
+            if(!d.isShowing||account?.token!=token)return
+            if(!append)items.removeAllViews()
+            if(feed.news.isEmpty()&&!append)put(items,centered(tr("هنوز خبری منتشر نشده است.","No announcements yet."),15,muted),12)
+            for(item in feed.news){
+                val preview=item.body.replace(Regex("\\s+")," ").take(96)
+                val row=column().apply{
+                    background=shape(navy,14,if(item.read)null else blue)
+                    setPadding(dp(14),dp(12),dp(14),dp(12))
+                    isClickable=true;isFocusable=true
+                    setOnClickListener{
+                        // Dismiss without allowing a pending floating news to obscure the detail.
+                        newsDialog=null;d.dismiss();showNewsDetail(item)
+                    }
+                }
+                put(row,label((if(item.read)"" else "●  ")+preview,15,fg,!item.read))
+                put(row,label(newsDate(item.created),11,muted),6)
+                put(items,row,8)
+            }
+            if(feed.nextBefore>0){
+                lateinit var more:Button
+                more=button(tr("خبرهای قدیمی‌تر","Older announcements"),navy){
+                    more.isEnabled=false
+                    lifecycleScope.launch{
+                        val page=withContext(Dispatchers.IO){runCatching{accountApi.news(token,feed.nextBefore)}}
+                        if(!d.isShowing||account?.token!=token)return@launch
+                        page.onSuccess{items.removeView(more);renderPage(it,true)}.onFailure{more.isEnabled=true;Toast.makeText(this@MainActivity,tr("دریافت خبر ناموفق بود.","Could not load news."),Toast.LENGTH_SHORT).show()}
+                    }
+                }
+                put(items,more,12)
+            }
+        }
+        displayNewsDialog(d)
+        newsFeed?.let{renderPage(it,false)}?:put(items,centered(tr("در حال دریافت خبرها…","Loading announcements…"),14,muted),12)
+        lifecycleScope.launch{
+            val result=withContext(Dispatchers.IO){runCatching{accountApi.news(token)}}
+            if(!d.isShowing||account?.token!=token)return@launch
+            result.onSuccess{newsFeed=it;updateNewsBadge();renderPage(it,false)}.onFailure{
+                if(newsFeed==null){items.removeAllViews();put(items,centered(tr("دریافت خبر ناموفق بود؛ دوباره باز کنید.","Could not load announcements. Reopen to retry."),14,muted),12)}
+            }
+        }
+    }
+    private fun showNewsDetail(item:DeltaNewsItem){
+        val (d,content)=newsCard(tr("🔔 خبر دلتا","🔔 Delta news"),newsDate(item.created))
+        newsDialog=d
+        newsBody(content,item.body)
+        if(item.url.isNotBlank())put(content,button(item.buttonLabel.ifBlank{tr("باز کردن لینک","Open link")},blue){openNewsLink(item)},16)
+        put(content,button(tr("بازگشت به خبرها","Back to announcements"),navy){newsDialog=null;d.dismiss();showNewsInbox()},12)
+        d.setOnDismissListener{if(newsDialog===d){newsDialog=null;maybeShowFloating()}}
+        displayNewsDialog(d)
+        if(!item.read)acknowledgeNews(item,false){}
+    }
+    private fun maybeShowFloating(){
+        val item=newsFeed?.floating?:return
+        if(!newsForeground||account==null||isFinishing||isDestroyed||newsDialog?.isShowing==true||floatingDialog?.isShowing==true||item.id in floatingShown)return
+        floatingShown.add(item.id)
+        val (d,content)=newsCard(tr("📢 اطلاعیه دلتا","📢 Delta announcement"),tr("خبر جدید","New announcement"))
+        floatingDialog=d
+        newsBody(content,item.body)
+        if(item.url.isNotBlank())put(content,button(item.buttonLabel.ifBlank{tr("باز کردن لینک","Open link")},blue){openNewsLink(item)},16)
+        lateinit var never:Button
+        never=button(tr("دیگر نمایش نده","Don't show again"),navy){
+            never.isEnabled=false
+            acknowledgeNews(item,true){ok->if(ok)d.dismiss() else never.isEnabled=true}
+        }
+        put(content,never,12)
+        put(content,button(tr("بستن","Close"),panel){d.dismiss()},6)
+        d.setOnDismissListener{if(floatingDialog===d){floatingDialog=null}}
+        displayNewsDialog(d)
+    }
     private fun updateUsage(){
         val current=account
-        usageText.text = current?.let { "${gb(it.remainingBytes)} / ${it.gb} GB" } ?: "—"
+        usageText.text = current?.let { "${gb(it.remainingBytes)} / ${gb(it.limitBytes)} GB" } ?: "—"
         usageDetail.text = current?.let {
             val age = ((android.os.SystemClock.elapsedRealtime()-it.receivedElapsed).coerceAtLeast(0)/1000)
             val detail=tr("مصرف: ${gb(it.usedBytes)} GB · آخرین دریافت: ${age} ثانیه قبل","Used: ${gb(it.usedBytes)} GB · Updated ${age}s ago")
@@ -624,6 +831,7 @@ class MainActivity : ComponentActivity() {
             val a = account
             if (a != null && a.remainingSeconds() == 0L && (running || transitioning)) LauncherManager.stopService(this@MainActivity)
             val now = android.os.SystemClock.elapsedRealtime()
+            if(newsForeground&&account!=null&&now-newsLastPoll>=30000L)refreshNews()
             if (ready && stateKnown && account != null && !busy && !transitioning && pingRequest==null && now-lastPoll>=30000L) {
                 lastPoll=now
                 pollUsage()
