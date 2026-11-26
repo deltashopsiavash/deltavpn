@@ -11,7 +11,7 @@ import java.net.Proxy
 import java.net.URI
 import java.util.concurrent.TimeUnit
 
-data class DeltaAccount(val token: String, val username: String, val configs: List<String>, val gb: Int, val expires: Long, val serverNow: Long, val receivedElapsed: Long) {
+data class DeltaAccount(val token: String, val username: String, val configs: List<String>, val gb: Int, val expires: Long, val serverNow: Long, val receivedElapsed: Long, val limitBytes: Long, val usedBytes: Long, val remainingBytes: Long, val canConnect: Boolean, val panelStatus: String) {
     val deadlineElapsed: Long get() = receivedElapsed + (expires-serverNow).coerceAtLeast(0)*1000L
     fun remainingSeconds(): Long = ((deadlineElapsed-SystemClock.elapsedRealtime()).coerceAtLeast(0)+999)/1000
 }
@@ -35,8 +35,8 @@ class DeltaAccountApi {
     }
     private fun decode(r: JsonObject): DeltaAccount {
         val a = DeltaAccount(r.get("token").asString, r.get("username").asString,
-            r.getAsJsonArray("configs").map { it.asString }, r.get("gb").asInt, r.get("expires").asLong, r.get("server_now").asLong, SystemClock.elapsedRealtime())
-        check(a.token.matches(Regex("[a-f0-9]{64}")) && a.configs.size <= 1000 && a.gb > 0 &&
+            r.getAsJsonArray("configs").map { it.asString }, r.get("gb").asInt, r.get("expires").asLong, r.get("server_now").asLong, SystemClock.elapsedRealtime(), r.get("limit_bytes").asLong, r.get("used_bytes").asLong, r.get("remaining_bytes").asLong, r.get("can_connect").asBoolean, r.get("panel_status").asString)
+        check(r.get("quota_enforced").asBoolean && a.limitBytes == a.gb.toLong()*1073741824L && a.usedBytes >= 0 && a.remainingBytes == (a.limitBytes-a.usedBytes).coerceAtLeast(0) && (!a.canConnect || (a.remainingBytes>0 && a.panelStatus=="active")) && a.token.matches(Regex("[a-f0-9]{64}")) && a.configs.size <= 1000 && a.gb > 0 &&
             a.expires > a.serverNow && a.expires-a.serverNow <= 3650L*86400L)
         return a
     }
@@ -45,6 +45,9 @@ class DeltaAccountApi {
     }))
     fun session(token: String) = decode(call(JsonObject().apply {
         addProperty("action","session"); addProperty("token",token)
+    }))
+    fun status(token: String) = decode(call(JsonObject().apply {
+        addProperty("action","status"); addProperty("token",token)
     }))
     fun logout(token: String) { call(JsonObject().apply { addProperty("action","logout"); addProperty("token",token) }) }
 }

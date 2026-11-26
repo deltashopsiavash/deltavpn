@@ -42,3 +42,6 @@ Login controls no longer wait indefinitely for a stopped VPN daemon. Ordered reg
 
 ## 1.3.3
 Android Keystore encrypted session token; automatic authenticated restoration, no saved password. New tokens are valid through account expiry and revoked by owner reset/deletion. Server UTC timestamp anchors the local monotonic countdown; VPN service receives the deadline and stops at expiry when scheduled, including with UI closed. This is client-side expiry enforcement, not upstream credential revocation. Purchased volume only; consumed/remaining bytes unknown with shared credentials. Device and background lifecycle tests required.
+
+## 1.4.0 dedicated PasarGuard preview
+Requires dedicated backend provisioning. Each account receives only its own configurations and verified panel data_limit / used_traffic / expire. Displays real remaining bytes and time, polls panel usage via backend every 60 seconds while the UI is alive and connected, and refuses connection if panel quota/status disallows it. Panel/node enforcement remains authoritative, polling is not instant. Session restoration remains encrypted. Old shared accounts are not migrated automatically. Device and real node quota tests required; no public sales yet.
