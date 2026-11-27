@@ -156,17 +156,26 @@ jobs:
           echo "APK_SIGNED"
           "$bt/apksigner" verify --verbose --print-certs output/DeltaVPN-1.7.3-arm64.apk > "$tmp/cert.txt" || fail "APK signature verification failed."
           cat "$tmp/cert.txt"
-          # Accept harmless formatting differences across Android build-tools versions.
+          # Require exactly one verified signer; accept legacy and scheme-specific certificate labels.
           actual=$(python3 - "$tmp/cert.txt" <<'PY'
           import re, sys
           data = open(sys.argv[1], encoding="utf-8").read()
-          rows = re.findall(r"(?im)^\s*Signer\s+#(\d+)\s+certificate\s+SHA-256\s+digest\s*:\s*([0-9a-f:]+)\s*$", data)
-          if len(rows) != 1 or rows[0][0] != "1":
-              sys.exit("Expected exactly one APK signer certificate digest")
-          digest = rows[0][1].replace(":", "").lower()
-          if not re.fullmatch(r"[0-9a-f]{64}", digest):
-              sys.exit("Invalid APK signer certificate digest")
-          print(digest)
+          counts = re.findall(r'(?im)^\s*Number of signers:\s*(\d+)\s*$', data)
+          if counts != ['1']:
+              sys.exit('Expected exactly one APK signer')
+          lines = [line for line in data.splitlines() if re.search(r'certificate\s+SHA-256\s+digest\s*:', line, re.I)]
+          digests = set()
+          for line in lines:
+              row = re.fullmatch(r'\s*(?:Signer\s+#1\s*:?|V[23](?:\.\d+)?\s+Signer(?:\s+#1)?\s*:)\s+certificate\s+SHA-256\s+digest\s*:\s*([0-9a-f:]+)\s*', line, re.I)
+              if not row:
+                  sys.exit('Unexpected APK signer certificate format')
+              digest = row[1].replace(':', '').lower()
+              if not re.fullmatch(r'[0-9a-f]{64}', digest):
+                  sys.exit('Invalid APK signer certificate digest')
+              digests.add(digest)
+          if len(digests) != 1:
+              sys.exit('Expected exactly one distinct APK signer certificate digest')
+          print(digests.pop())
           PY
           ) || fail "Unable to read exactly one verified signer."
           [[ "$actual" == "$expected" ]] || fail "Signed APK certificate differs from pinned certificate."
