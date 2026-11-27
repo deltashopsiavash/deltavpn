@@ -17,7 +17,7 @@ data class DeltaAccount(val token: String, val username: String, val configs: Li
 }
 data class DeltaNewsItem(val id: Long, val body: String, val url: String, val buttonLabel: String, val created: Long, val read: Boolean)
 data class DeltaNewsFeed(val unread: Int, val news: List<DeltaNewsItem>, val nextBefore: Long, val floating: DeltaNewsItem?)
-class DeltaApiException(val status: Int): Exception()
+class DeltaApiException(val status: Int, val reason: String = ""): Exception()
 
 class DeltaAccountApi {
     private val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
@@ -28,7 +28,13 @@ class DeltaAccountApi {
         require(uri.scheme == "https" && uri.host != null && uri.rawUserInfo == null && uri.rawFragment == null && uri.rawQuery == null)
         val req = Request.Builder().url(endpoint).post(json.toString().toRequestBody("application/json".toMediaType())).build()
         return client.newCall(req).execute().use { r ->
-            if (!r.isSuccessful) throw DeltaApiException(r.code)
+            if (!r.isSuccessful) {
+                val reason=runCatching {
+                    val source=r.body?.source() ?: return@runCatching ""
+                    if(source.request(4097)) "" else JsonParser.parseString(source.readUtf8()).asJsonObject.get("error")?.asString.orEmpty()
+                }.getOrDefault("")
+                throw DeltaApiException(r.code,reason)
+            }
             val body = r.body ?: error("empty")
             val source = body.source()
             check(!source.request(4_000_001))
@@ -48,11 +54,13 @@ class DeltaAccountApi {
             r.get(k)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.matches(Regex("[A-Za-z][A-Za-z0-9_]{4,31}")) } ?: ""
         }
     }
-    fun login(name: String, password: String, device: String, model: String) = decode(call(JsonObject().apply {
+    fun login(name: String, password: String, device: String, model: String, legacy: String? = null) = decode(call(JsonObject().apply {
         addProperty("action","login"); addProperty("username",name); addProperty("password",password);addProperty("device_id",device);addProperty("device_model",model)
+        if(!legacy.isNullOrBlank() && legacy!=device)addProperty("legacy_device_id",legacy)
     }))
-    fun session(token: String) = decode(call(JsonObject().apply {
+    fun session(token: String, stableDevice: String? = null) = decode(call(JsonObject().apply {
         addProperty("action","session"); addProperty("token",token)
+        if(!stableDevice.isNullOrBlank())addProperty("stable_device_id",stableDevice)
     }))
     fun status(token: String) = decode(call(JsonObject().apply {
         addProperty("action","status"); addProperty("token",token)
