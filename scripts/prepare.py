@@ -95,9 +95,18 @@ service_manager.write_text(state_code)
 
 notification = src / "handler/NotificationManager.kt"
 notice = notification.read_text()
-notice = replace_exact(notice, "    private const val QUERY_INTERVAL_MS = 3000L", """    private val deltaTrafficHandler = android.os.Handler(android.os.Looper.getMainLooper())
+# Keep the required VPN foreground notification; remove all upstream V branding.
+for upstream_icon in ("ic_stat_name", "ic_stat_proxy", "ic_stat_direct"):
+    assert "R.drawable."+upstream_icon in notice
+    notice = notice.replace("R.drawable."+upstream_icon, "R.drawable.delta_stat")
+helper = src / "helper/NotificationHelper.kt"
+helper.write_text(replace_exact(helper.read_text(), "R.drawable.ic_stat_name", "R.drawable.delta_stat"))
+notice = replace_exact(notice, "    private const val QUERY_INTERVAL_MS = 3000L", """    private val deltaTrafficThread = android.os.HandlerThread("DeltaTraffic").apply { start() }
+    private val deltaTrafficHandler = android.os.Handler(deltaTrafficThread.looper)
+    private val deltaNoticeHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val deltaTrafficWindow = com.v2ray.ang.delta.DeltaTrafficWindow()
-    private var deltaSampling = false
+    @Volatile private var deltaSampling = false
+    @Volatile private var deltaSampleGeneration = 0L
     private var deltaLastNotificationAt = 0L
     private val deltaTrafficTick = object : Runnable {
         override fun run() {
@@ -117,6 +126,7 @@ notice = notice[:start] + """    fun startSpeedNotification() {
         deltaTrafficHandler.post {
             if (!CoreServiceManager.isRunning() || deltaSampling) return@post
             deltaSampling = true
+            deltaSampleGeneration++
             deltaTrafficWindow.reset()
             deltaLastNotificationAt = 0L
             deltaTrafficHandler.removeCallbacks(deltaTrafficTick)
@@ -132,11 +142,15 @@ end = notice.index("\n    /**", start)
 notice = notice[:start] + """    fun stopSpeedNotification() {
         deltaTrafficHandler.post {
             deltaSampling = false
+            deltaSampleGeneration++
             deltaTrafficHandler.removeCallbacks(deltaTrafficTick)
             deltaTrafficWindow.reset()
             deltaSendTraffic(android.os.SystemClock.elapsedRealtime(), 0L, 0L)
-            if (MmkvManager.decodeSettingsBool(AppConfig.PREF_SPEED_ENABLED) == true)
-                updateNotification("", 0L, 0L)
+            val generation=deltaSampleGeneration
+            deltaNoticeHandler.post {
+                if(generation==deltaSampleGeneration && !deltaSampling && MmkvManager.decodeSettingsBool(AppConfig.PREF_SPEED_ENABLED)==true)
+                    updateNotification("", 0L, 0L)
+            }
         }
     }
 """ + notice[end:]
@@ -193,12 +207,32 @@ notice = notice[:start] + """    private fun deltaSendTraffic(now: Long, down: L
             val directUpRate = traffic.rate(directUp, elapsed)
             val directDownRate = traffic.rate(directDown, elapsed)
             appendSpeedString(text, AppConfig.TAG_DIRECT, directUpRate.toDouble(), directDownRate.toDouble())
-            updateNotification(text.toString(), traffic.add(up, down), traffic.add(directUpRate, directDownRate))
+            val generation=deltaSampleGeneration
+            deltaNoticeHandler.post {
+                if(deltaSampling && generation==deltaSampleGeneration && epoch==CoreServiceManager.deltaTrafficGeneration())
+                    updateNotification(text.toString(), traffic.add(up, down), traffic.add(directUpRate, directDownRate))
+            }
             deltaLastNotificationAt = now
         }
     }
 """ + notice[end:]
 notification.write_text(notice)
+
+# Real ping uses the configured proxy, not a one-second preliminary TCP gate.
+worker = src / "service/RealPingWorkerService.kt"
+probe = worker.read_text()
+start = probe.index("        if (!config.configType.isComplexType()", probe.index("private suspend fun startRealPing"))
+end = probe.index("        val configResult", start)
+probe = probe[:start] + probe[end:]
+probe = replace_exact(probe, "            CoreNativeManager.measureOutboundDelay(configResult.content, SettingsManager.getDelayTestUrl())", """            val first = CoreNativeManager.measureOutboundDelay(configResult.content, SettingsManager.getDelayTestUrl())
+            if(first>0L) first else CoreNativeManager.measureOutboundDelay(configResult.content, SettingsManager.getDelayTestUrl(true))""")
+probe = replace_exact(probe, "                } catch (_: Throwable) {\n                    // ignore", "                } catch (_: CancellationException) {\n                    // cancelled batch: do not emit stale results\n                } catch (_: Exception) {\n                    if(scope.isActive) onEvent(RealPingEvent.Result(guid, -1L))")
+worker.write_text(probe)
+# Connected ping already uses the running core. Do not add a separate IP lookup.
+state_code = service_manager.read_text()
+state_code = replace_exact(state_code, "            val endpoint = if (time >= 0) SpeedtestManager.getRemoteIPInfo() else null\n", "")
+state_code = replace_exact(state_code, "                country = endpoint?.country,\n                ipAddress = endpoint?.ipAddress,\n", "")
+service_manager.write_text(state_code)
 
 # Bind each VPN start to the validated monotonic deadline, including in the daemon process.
 launcher = src / "core/LauncherManager.kt"
@@ -293,8 +327,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 26'),
-    ('versionName = "2.3.15"', 'versionName = "1.7.9"'),
+    ('versionCode = 755', 'versionCode = 27'),
+    ('versionName = "2.3.15"', 'versionName = "1.8.0"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
@@ -358,4 +392,5 @@ for node in (app / "src/main/res").glob("values*/strings.xml"):
 icon = app / "src/main/res/drawable/delta_icon.xml"
 icon.write_text((overlay / "delta_icon.xml").read_text())
 (icon.parent / "delta_power.xml").write_text((overlay / "delta_power.xml").read_text())
+(icon.parent / "delta_stat.xml").write_text((overlay / "delta_stat.xml").read_text())
 print("Delta overlay applied.")

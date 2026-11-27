@@ -29,6 +29,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.v2ray.ang.dto.TestServiceMessage
 import com.v2ray.ang.dto.RealPingResult
+import com.v2ray.ang.dto.ConnectionTestResult
 import java.util.Locale
 import android.content.Context
 import android.content.Intent
@@ -214,6 +215,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var usageBar: ProgressBar
     private lateinit var pingButton: Button
     private var pingRequest: String? = null
+    private var activeTunnelPing = false
+    private var activePingGuid: String? = null
     private val delays = mutableMapOf<String, Long>()
     private val green = Color.parseColor("#50D39A")
     private val yellow = Color.parseColor("#F3C95C")
@@ -254,20 +257,31 @@ class MainActivity : ComponentActivity() {
                         updateTraffic()
                     }
                 }
+                AppConfig.MSG_MEASURE_DELAY_RESULT, AppConfig.MSG_MEASURE_DELAY_CANCEL -> {
+                    if(activeTunnelPing && pingRequest!=null && intent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID)==pingRequest){
+                        @Suppress("DEPRECATION")
+                        val result=intent.getSerializableExtra("content") as? ConnectionTestResult
+                        val value=result?.delayMillis ?: -1L
+                        val guid=activePingGuid
+                        pingRequest=null;activeTunnelPing=false;activePingGuid=null
+                        if(guid!=null && guid in repo.servers)delays[guid]=value
+                        render(if(value>0)tr("پینگ اتصال فعلی: $value ms","Current connection ping: $value ms") else tr("پینگ اتصال فعلی ناموفق بود.","Current connection ping failed."))
+                    }
+                }
                 AppConfig.MSG_MEASURE_CONFIG_SUCCESS -> {
-                    if (pingRequest != null && intent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID) == pingRequest) {
+                    if (!activeTunnelPing && pingRequest != null && intent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID) == pingRequest) {
                         @Suppress("DEPRECATION")
                         val result = intent.getSerializableExtra("content") as? RealPingResult
                         if (result != null) { delays[result.guid] = result.delayMillis; render() }
                     }
                 }
                 AppConfig.MSG_MEASURE_CONFIG_FINISH, AppConfig.MSG_MEASURE_CONFIG_CANCEL -> {
-                    if (pingRequest != null && intent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID) == pingRequest) {
+                    if (!activeTunnelPing && pingRequest != null && intent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID) == pingRequest) {
                         val complete = intent.getIntExtra("key",0) == AppConfig.MSG_MEASURE_CONFIG_FINISH
                         pingRequest = null
                         if (quickMode && complete) finishQuick() else {
                             quickMode = false
-                            render(if (complete) tr("تست سرورها پایان یافت.","Server test finished.") else tr("تست لغو شد.","Test cancelled."))
+                            render(if (complete && delays.values.any{it>0}) tr("تست سرورها پایان یافت.","Server test finished.") else if(complete) tr("هیچ سروری به تست پینگ پاسخ نداد.","No server responded to the ping test.") else tr("تست لغو شد.","Test cancelled."))
                         }
                     }
                 }
@@ -277,6 +291,7 @@ class MainActivity : ComponentActivity() {
                     render(tr("اتصال برقرار است","Connected")); maybeRestore()
                 }
                 AppConfig.MSG_STATE_NOT_RUNNING, AppConfig.MSG_STATE_STOP_SUCCESS -> {
+                    if(activeTunnelPing){pingRequest=null;activeTunnelPing=false;activePingGuid=null}
                     stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
                     if (logoutPending) { logoutPending=false; signOut() }
                     else { render(if (account == null) tr("نام کاربری و رمز عبور را وارد کنید.","Enter username and password.") else tr("قطع اتصال","Disconnect")); maybeRestore() }
@@ -589,7 +604,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onDestroy() {
         cancelUsagePoll();newsForeground=false;clearNews();powerPulse?.cancel();powerPulse=null
-        if (pingRequest != null) MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
+        if (pingRequest != null && !activeTunnelPing) MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
         timer.removeCallbacksAndMessages(null)
         MessageHelper.sendMsg2Service(this, AppConfig.MSG_UNREGISTER_CLIENT, "")
         unregisterReceiver(receiver); super.onDestroy()
@@ -644,19 +659,38 @@ class MainActivity : ComponentActivity() {
     }
     private fun gb(bytes: Long): String = String.format(Locale.US, "%.3f", bytes.coerceAtLeast(0) / 1073741824.0).trimEnd('0').trimEnd('.')
     private fun testServers(quick:Boolean=false) {
-        if (pingRequest != null || busy || transitioning || running || repo.servers.isEmpty()) return
+        if (pingRequest != null || busy || transitioning || account==null || (running && quick) || (!running && repo.servers.isEmpty())) return
         cancelUsagePoll()
         val id = java.util.UUID.randomUUID().toString()
+        if(running){
+            activeTunnelPing=true;activePingGuid=MmkvManager.getSelectServer()
+            pingRequest=id
+            render(tr("در حال تست پینگ اتصال فعلی…","Testing current connection…"))
+            MessageHelper.sendMsg2ServiceForResult(this,AppConfig.MSG_MEASURE_DELAY,id){handled->
+                if(!handled && pingRequest==id){
+                    pingRequest=null;activeTunnelPing=false;activePingGuid=null
+                    render(tr("سرویس اتصال به تست پاسخ نداد.","VPN service did not respond to the test."))
+                }
+            }
+            timer.postDelayed({
+                if(pingRequest==id){
+                    pingRequest=null;activeTunnelPing=false;activePingGuid=null
+                    render(tr("مهلت تست پینگ اتصال پایان یافت.","Connection ping timed out."))
+                }
+            },30000)
+            return
+        }
         quickMode=quick
         pingRequest = id; delays.clear(); render(if(quick)tr("در حال یافتن سریع‌ترین سرور…","Finding the fastest server…") else tr("در حال تست واقعی سرورها…","Testing servers…"))
-        MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_START, repo.group, repo.servers), id)
+        // Explicit GUIDs only: never allow upstream test cleanup/sorting to modify the catalog.
+        MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_START, "", repo.servers), id)
         timer.postDelayed({
             if (pingRequest == id) {
                 pingRequest = null;quickMode=false
                 MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
                 render(tr("مهلت تست پینگ پایان یافت.","Server test timed out."))
             }
-        }, 180000)
+        }, 120000)
     }
     private fun finishQuick(){
         quickMode=false
@@ -695,7 +729,7 @@ class MainActivity : ComponentActivity() {
             powerPulse=ValueAnimator.ofFloat(1f,0.94f,1f).apply{duration=1000;repeatCount=ValueAnimator.INFINITE;addUpdateListener{val v=it.animatedValue as Float;connect.scaleX=v;connect.scaleY=v};start()}
         }else if(!transitioning){powerPulse?.cancel();powerPulse=null;connect.scaleX=1f;connect.scaleY=1f}
         connect.contentDescription = if (running) tr("قطع اتصال","Disconnect") else tr("اتصال","Connect")
-        connect.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest == null && (running || account?.canConnect == true || (account!=null && usageStale))
+        connect.isEnabled = ready && stateKnown && !busy && !transitioning && (pingRequest == null || running) && (running || account?.canConnect == true || (account!=null && usageStale))
         connect.alpha = if (connect.isEnabled || (account!=null && (busy || transitioning || pingRequest!=null))) 1f else 0.55f
         status.setTextColor(if (running) green else muted)
         val editable = ready && stateKnown && !busy && !transitioning && !running && pingRequest == null
@@ -711,7 +745,7 @@ class MainActivity : ComponentActivity() {
         importButton.text=if(manualLogin)"" else tr("ورود به حساب","Sign in")
         if(manualLogin){importButton.animate().scaleX(0.97f).scaleY(0.97f).setDuration(160).start()}
         else {importButton.animate().scaleX(1f).scaleY(1f).setDuration(180).start()}
-        pingButton.isEnabled = editable && hasSub && account != null
+        pingButton.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest==null && account!=null && (running || repo.servers.isNotEmpty())
         pingButton.text = if (pingRequest != null) tr("در حال تست…","Testing…") else tr("📶 تست پینگ","📶 Ping")
 
         updateUsage()
@@ -1128,9 +1162,10 @@ class MainActivity : ComponentActivity() {
         if (previous != null) lifecycleScope.launch(Dispatchers.IO) { runCatching { accountApi.logout(previous.token) } }
     }
     private fun toggle() {
-        if (busy || transitioning || pingRequest!=null) return
+        if (busy || transitioning || (pingRequest!=null && !running)) return
         cancelUsagePoll()
         if (running) {
+            if(activeTunnelPing){pingRequest=null;activeTunnelPing=false;activePingGuid=null}
             transitioning = true; render(tr("در حال قطع اتصال…","Disconnecting…"))
             LauncherManager.stopService(this); timer.postDelayed(timeout, 15000)
         } else if (account != null) {
