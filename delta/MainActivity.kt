@@ -19,6 +19,9 @@ import com.v2ray.ang.delta.DeltaAccount
 import com.v2ray.ang.delta.DeltaApiException
 import com.v2ray.ang.delta.DeltaSessionStore
 import com.v2ray.ang.delta.DeltaRefreshCursor
+import com.v2ray.ang.delta.DeltaTraffic
+import com.v2ray.ang.delta.DeltaTrafficView
+import android.os.SystemClock
 import android.graphics.drawable.Drawable
 import android.content.res.ColorStateList
 import androidx.core.view.ViewCompat
@@ -58,6 +61,34 @@ class MainActivity : ComponentActivity() {
     private lateinit var repo: DeltaSubscriptions
     private lateinit var root: LinearLayout
     private lateinit var status: TextView
+    private lateinit var trafficPanel: DeltaTrafficView
+    private var trafficSample: LongArray? = null
+    private var trafficAcceptAfter = 0L
+
+    private fun clearTraffic() {
+        trafficSample = null
+        trafficAcceptAfter = SystemClock.elapsedRealtime()
+        if (::trafficPanel.isInitialized) trafficPanel.show(0L, 0L)
+    }
+
+    private fun trafficAllowed(now: Long): Boolean {
+        val a = account ?: return false
+        return newsForeground && ready && stateKnown && running && !transitioning &&
+            a.canConnect && a.remainingBytes > 0L && a.deadlineElapsed > now
+    }
+
+    private fun updateTraffic() {
+        if (!::trafficPanel.isInitialized) return
+        val now = SystemClock.elapsedRealtime()
+        if (!trafficAllowed(now)) { clearTraffic(); return }
+        val sample = trafficSample
+        if (DeltaTraffic.fresh(sample, now, trafficAcceptAfter) && sample != null) {
+            trafficPanel.show(sample[1], sample[2])
+        } else {
+            trafficSample = null
+            trafficPanel.show(0L, 0L)
+        }
+    }
     private lateinit var connect: ImageButton
     private lateinit var login: LinearLayout
     private lateinit var startup: LinearLayout
@@ -198,6 +229,15 @@ class MainActivity : ComponentActivity() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.getIntExtra("key", 0)) {
+                DeltaTraffic.MESSAGE -> {
+                    val now = SystemClock.elapsedRealtime()
+                    val sample = intent.getLongArrayExtra(DeltaTraffic.EXTRA)
+                    if (trafficAllowed(now) && DeltaTraffic.fresh(sample, now, trafficAcceptAfter) &&
+                        (trafficSample?.get(0) ?: -1L) <= (sample?.get(0) ?: -1L)) {
+                        trafficSample = sample
+                        updateTraffic()
+                    }
+                }
                 AppConfig.MSG_MEASURE_CONFIG_SUCCESS -> {
                     if (pingRequest != null && intent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID) == pingRequest) {
                         @Suppress("DEPRECATION")
@@ -216,6 +256,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 AppConfig.MSG_STATE_RUNNING, AppConfig.MSG_STATE_START_SUCCESS -> {
+                    if (!running || transitioning) clearTraffic()
                     stateQueryGeneration++; stateKnown = true; running = true; transitioning = false; timer.removeCallbacks(timeout)
                     render(tr("اتصال برقرار است","Connected")); maybeRestore()
                 }
@@ -314,7 +355,7 @@ class MainActivity : ComponentActivity() {
         contacts.addView(button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd=dp(8) })
         contacts.addView(button(tr("پشتیبانی","Support"),panel){openContact("support")},LinearLayout.LayoutParams(0,dp(50),1f))
         put(login,contacts,10)
-        put(login, centered("v1.7.4", 11, muted), 20)
+        put(login, centered("v1.7.5", 11, muted), 20)
 
         val menuButton=button("☰",panel){showDrawer()}
         menuButton.contentDescription=tr("منوی حساب","Account menu")
@@ -353,7 +394,7 @@ class MainActivity : ComponentActivity() {
         put(dashboard,header)
         put(dashboard, centered("DELTA VPN", 30, fg, true), 0)
         put(dashboard, roundLogo(), 14, dp(78), dp(78), Gravity.CENTER_HORIZONTAL)
-        dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,0.65f))
+        dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,0.45f))
         val quota = column().apply {
             background = shape(panel, 18); setPadding(dp(16),dp(15),dp(16),dp(15))
         }
@@ -372,6 +413,10 @@ class MainActivity : ComponentActivity() {
         expiry = centered(tr("اعتبار: نامشخص","Validity: unknown"), 13, green)
         put(quota, expiry, 10)
 
+        trafficPanel = DeltaTrafficView(this, english)
+        dashboard.addView(trafficPanel, LinearLayout.LayoutParams(-1, dp(54)).apply {
+            leftMargin = dp(17); rightMargin = dp(17); gravity = Gravity.CENTER_HORIZONTAL
+        })
         connect = ImageButton(this).apply {
             setImageResource(com.v2ray.ang.R.drawable.delta_power)
             scaleType = ImageView.ScaleType.CENTER
@@ -381,7 +426,7 @@ class MainActivity : ComponentActivity() {
             stateListAnimator = null; elevation = dp(3).toFloat()
             setOnClickListener { performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY); toggle() }
         }
-        put(dashboard, connect, 30, dp(158), dp(158), Gravity.CENTER_HORIZONTAL)
+        put(dashboard, connect, 24, dp(158), dp(158), Gravity.CENTER_HORIZONTAL)
         status = centered(tr("برای اتصال لمس کنید","Tap to connect"), 14, muted)
         put(dashboard, status, 12)
 
@@ -402,7 +447,7 @@ class MainActivity : ComponentActivity() {
         servers=column();put(serverSection,servers,8)
         put(dashboard,serverSection)
         dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
-        put(dashboard, centered("v1.7.4",11,muted),16)
+        put(dashboard, centered("v1.7.5",11,muted),16)
 
         drawer=FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt());visibility=View.GONE;setOnClickListener{hideDrawer()} }
         val drawerScroll=ScrollView(this).apply { isFillViewport=true;setBackgroundColor(navy);isClickable=true }
@@ -421,7 +466,7 @@ class MainActivity : ComponentActivity() {
         put(menu,refreshButton,10)
         clearButton=button(tr("خروج از حساب","Sign out"),Color.parseColor("#A52F42")){requestSignOut()}
         put(menu,clearButton,10)
-        put(menu,centered("v1.7.4",11,muted),16)
+        put(menu,centered("v1.7.5",11,muted),16)
         shell.addView(drawer,FrameLayout.LayoutParams(-1,-1))
         deviceScreen=FrameLayout(this).apply{setBackgroundColor(navy);visibility=View.GONE;isClickable=true}
         val deviceScroll=ScrollView(this).apply{isFillViewport=true}
@@ -452,8 +497,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); newsForeground=true;motion.active=true;motion.invalidate(); if (ready) queryState(); refreshNews(true) }
-    override fun onPause() { newsForeground=false;motion.active=false;super.onPause() }
+    override fun onResume() { super.onResume(); clearTraffic(); newsForeground=true;motion.active=true;motion.invalidate(); if (ready) queryState(); refreshNews(true) }
+    override fun onPause() { newsForeground=false;clearTraffic();motion.active=false;super.onPause() }
     private fun showDrawer() {
         drawer.visibility=View.VISIBLE
         val child=drawer.getChildAt(0)
@@ -592,6 +637,7 @@ class MainActivity : ComponentActivity() {
         if (starting) startupStatus.text = if (busy) tr("در حال ورود خودکار…","Signing in automatically…") else tr("در حال آماده‌سازی…","Preparing…")
         message?.let { status.text = it; loginStatus.text = it }
         if (!transitioning && message == null && pingRequest==null) status.text = if(running)tr("اتصال برقرار است","Connected") else tr("برای اتصال لمس کنید","Tap to connect")
+        updateTraffic()
         connect.background = powerBackground(running)
         if(transitioning && powerPulse==null && (android.os.Build.VERSION.SDK_INT<26 || ValueAnimator.areAnimatorsEnabled())){
             powerPulse=ValueAnimator.ofFloat(1f,0.94f,1f).apply{duration=1000;repeatCount=ValueAnimator.INFINITE;addUpdateListener{val v=it.animatedValue as Float;connect.scaleX=v;connect.scaleY=v};start()}
@@ -856,6 +902,7 @@ class MainActivity : ComponentActivity() {
             if (isDestroyed) return
             updateExpiry()
             updateUsage()
+            updateTraffic()
             val a = account
             if (a != null && a.remainingSeconds() == 0L && (running || transitioning)) LauncherManager.stopService(this@MainActivity)
             val now = android.os.SystemClock.elapsedRealtime()
