@@ -12,11 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
       - name: Get pinned upstream source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: 2dust/v2rayNG
           ref: 57907cf354d9769200ed4717b4430d605abe0952
@@ -29,7 +29,7 @@ jobs:
         with:
           cmdline-tools-version: '14742923'
           packages: 'platforms;android-37.0 build-tools;37.0.0 platform-tools'
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
@@ -52,12 +52,47 @@ jobs:
         env:
           DELTA_APP_API_URL: ${{ vars.DELTA_APP_API_URL }}
         run: python3 scripts/prepare.py upstream
+      - name: Resolve pinned Kotlin plugins directly
+        working-directory: upstream/V2rayNG
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("settings.gradle.kts")
+          src = path.read_text()
+          anchor = "pluginManagement {\n"
+          if src.count(anchor) != 1 or "resolutionStrategy {" in src:
+              raise SystemExit("Unexpected upstream pluginManagement configuration")
+          patch = '''    resolutionStrategy {
+                  eachPlugin {
+                      when (requested.id.id) {
+                          "org.jetbrains.kotlin.android" ->
+                              useModule("org.jetbrains.kotlin:kotlin-gradle-plugin:$VER")
+                          "org.jetbrains.kotlin.plugin.compose" ->
+                              useModule("org.jetbrains.kotlin:compose-compiler-gradle-plugin:$VER")
+                      }
+                  }
+              }
+          '''.replace("$VER", "$" + "{requested.version}")
+          path.write_text(src.replace(anchor, anchor + patch, 1))
+          print("PINNED_KOTLIN_PLUGIN_MODULES_CONFIGURED")
+          PY
+      - name: Verify Gradle configuration and resolve plugins
+        working-directory: upstream/V2rayNG
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          if ! ./gradlew --no-daemon --stacktrace help; then
+            echo "::warning::Gradle configuration failed; retrying once with refreshed dependencies."
+            sleep 10
+            ./gradlew --no-daemon --refresh-dependencies --stacktrace help
+          fi
       - name: Compile ARM64 unsigned release APK
         working-directory: upstream/V2rayNG
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew --no-daemon assembleFdroidRelease -PABI_FILTERS=arm64-v8a
+          ./gradlew --no-daemon --stacktrace assembleFdroidRelease -PABI_FILTERS=arm64-v8a
           mkdir -p "$GITHUB_WORKSPACE/output"
           mapfile -t apks < <(find app/build/outputs/apk/fdroid/release -name '*arm64-v8a*.apk')
           test "${#apks[@]}" = 1
@@ -83,7 +118,7 @@ jobs:
         with:
           name: delta-unsigned-release
           path: output
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
