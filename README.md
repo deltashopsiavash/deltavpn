@@ -67,3 +67,6 @@ Dedicated full-screen device management instead of list dialog. Network-level in
 
 ## 1.7.6 — administrator-controlled updates
 The account drawer retains subscription refresh and adds an APK download button only if the mother bot enables a newer official stable release. The button opens the exact public GitHub APK in the browser, with explicit Android installation confirmation. No background install. Update policy is disabled by default and checked on drawer open and approximately every 60 seconds while visible. Verify on device before public distribution: disabled/equal/older versions remain hidden; a newer enabled version displays; disabling hides it; offline API failure hides it. Existing 1.7.5 installations must first install 1.7.6 manually. Keep the permanent signing certificate and package ID. The signed private prerelease is not the public stable release.
+
+## 1.7.7 — cleaner account drawer
+Remove the manual subscription refresh button and the visible last-received counter and delayed-update message in both languages. Keep automatic polling, quota/expiry enforcement, and the remotely controlled official app update button. Last-known quota is muted if a status poll fails; no delay label is shown. No backend change required. Device testing remains required.

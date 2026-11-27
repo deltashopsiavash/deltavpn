@@ -209,7 +209,6 @@ class MainActivity : ComponentActivity() {
     private val red = Color.parseColor("#F47C83")
     private val navy = Color.parseColor("#0D1524")
     private lateinit var importButton: Button
-    private lateinit var refreshButton: Button
     private lateinit var appUpdateButton: Button
     private var appUpdate: DeltaAppUpdate? = null
     private var appUpdateLoading = false
@@ -468,8 +467,6 @@ class MainActivity : ComponentActivity() {
         put(menu,button(tr("تغییر زبان","Change language"),panel){chooseLanguage()},18)
         put(menu,button(tr("پشتیبانی","Support"),panel){openContact("support")},10)
         put(menu,button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},10)
-        refreshButton=button(tr("به‌روزرسانی اطلاعات اشتراک","Refresh subscription"),panel){validateAccount(false)}
-        put(menu,refreshButton,10)
         appUpdateButton=button(tr("⬇ دریافت نسخه جدید برنامه","⬇ Download app update"),blue){openAppUpdate()}.apply{visibility=View.GONE}
         put(menu,appUpdateButton,10)
         clearButton=button(tr("خروج از حساب","Sign out"),Color.parseColor("#A52F42")){requestSignOut()}
@@ -692,7 +689,6 @@ class MainActivity : ComponentActivity() {
         val editable = ready && stateKnown && !busy && !transitioning && !running && pingRequest == null
         val loginEditable = !busy && !running && !transitioning
         importButton.isEnabled = loginEditable; input.isEnabled = loginEditable; password.isEnabled = loginEditable
-        refreshButton.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest == null && account != null
         clearButton.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest==null && account!=null
         quickButton.isEnabled=editable && account?.canConnect==true && repo.servers.isNotEmpty()
         accountName.text=tr("نام کاربری: ","Username: ")+(account?.username?:"—")
@@ -922,11 +918,8 @@ class MainActivity : ComponentActivity() {
     private fun updateUsage(){
         val current=account
         usageText.text = current?.let { "${gb(it.remainingBytes)} / ${gb(it.limitBytes)} GB" } ?: "—"
-        usageDetail.text = current?.let {
-            val age = ((android.os.SystemClock.elapsedRealtime()-it.receivedElapsed).coerceAtLeast(0)/1000)
-            val detail=tr("مصرف: ${gb(it.usedBytes)} GB · آخرین دریافت: ${age} ثانیه قبل","Used: ${gb(it.usedBytes)} GB · Updated ${age}s ago")
-            if(usageStale)detail+"\n"+tr("به‌روزرسانی با تأخیر","Update delayed") else detail
-        } ?: tr("مصرف: نامشخص","Usage: unknown")
+        usageDetail.text = current?.let { tr("مصرف: ${gb(it.usedBytes)} GB","Used: ${gb(it.usedBytes)} GB") } ?: tr("مصرف: نامشخص","Usage: unknown")
+        usageText.setTextColor(if(usageStale) muted else fg)
         usageBar.visibility = if (current == null) View.GONE else View.VISIBLE
         usageBar.progress = current?.let { (it.remainingBytes.toDouble()/it.limitBytes*1000).toInt().coerceIn(0,1000) } ?: 0
 
