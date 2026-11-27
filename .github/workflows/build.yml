@@ -6,13 +6,15 @@ on:
     branches: [main]
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 jobs:
   apk:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Get pinned upstream source
         uses: actions/checkout@v4
         with:
@@ -50,33 +52,81 @@ jobs:
         env:
           DELTA_APP_API_URL: ${{ vars.DELTA_APP_API_URL }}
         run: python3 scripts/prepare.py upstream
-      - name: Compile ARM64 debug APK
+      - name: Compile ARM64 unsigned release APK
         working-directory: upstream/V2rayNG
         run: |
+          set -euo pipefail
           chmod +x gradlew
-          ./gradlew --no-daemon assembleFdroidDebug -PABI_FILTERS=arm64-v8a
+          ./gradlew --no-daemon assembleFdroidRelease -PABI_FILTERS=arm64-v8a
           mkdir -p "$GITHUB_WORKSPACE/output"
-          find app/build/outputs/apk/fdroid/debug -name '*arm64-v8a*.apk' -exec cp {} "$GITHUB_WORKSPACE/output/DeltaVPN-1.7.2-arm64.apk" \;
-          test -s "$GITHUB_WORKSPACE/output/DeltaVPN-1.7.2-arm64.apk"
+          mapfile -t apks < <(find app/build/outputs/apk/fdroid/release -name '*arm64-v8a*.apk')
+          test "${#apks[@]}" = 1
+          cp "${apks[0]}" "$GITHUB_WORKSPACE/output/DeltaVPN-unsigned.apk"
+          test -s "$GITHUB_WORKSPACE/output/DeltaVPN-unsigned.apk"
       - name: Archive corresponding source
         run: |
           tar --exclude=.git --exclude=.gradle --exclude=build --exclude=local.properties -czf output/DeltaVPN-source.tar.gz -C upstream .
-      - name: Upload test APK artifact
+      - name: Upload unsigned release build
         uses: actions/upload-artifact@v4
         with:
-          name: DeltaVPN-1.7.2-arm64
-          path: output/DeltaVPN-1.7.2-arm64.apk
+          name: delta-unsigned-release
+          path: output/
           if-no-files-found: error
-      - name: Publish standalone APK and separate source archive
-        if: github.ref == 'refs/heads/main'
+  publish:
+    needs: apk
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: delta-unsigned-release
+          path: output
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v4
+        with:
+          cmdline-tools-version: '14742923'
+          packages: 'build-tools;37.0.0'
+      - name: Sign and verify with permanent Delta certificate
+        env:
+          DELTA_KEYSTORE_B64: ${{ secrets.DELTA_KEYSTORE_B64 }}
+          DELTA_KEYSTORE_PASSWORD: ${{ secrets.DELTA_KEYSTORE_PASSWORD }}
+          DELTA_CERT_SHA256: ${{ vars.DELTA_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${DELTA_KEYSTORE_B64:?Missing permanent keystore}"
+          : "${DELTA_KEYSTORE_PASSWORD:?Missing keystore password}"
+          : "${DELTA_CERT_SHA256:?Missing pinned signing certificate fingerprint}"
+          expected=$(printf '%s' "$DELTA_CERT_SHA256" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+          [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          printf '%s' "$DELTA_KEYSTORE_B64" | base64 --decode > "$tmp/delta.p12"
+          unset DELTA_KEYSTORE_B64
+          bt="$ANDROID_HOME/build-tools/37.0.0"
+          "$bt/zipalign" -P 16 -f 4 output/DeltaVPN-unsigned.apk "$tmp/aligned.apk"
+          "$bt/apksigner" sign --ks "$tmp/delta.p12" --ks-type PKCS12 --ks-key-alias delta-release --ks-pass env:DELTA_KEYSTORE_PASSWORD --key-pass env:DELTA_KEYSTORE_PASSWORD --out output/DeltaVPN-1.7.3-arm64.apk "$tmp/aligned.apk"
+          unset DELTA_KEYSTORE_PASSWORD
+          "$bt/apksigner" verify --verbose --print-certs output/DeltaVPN-1.7.3-arm64.apk > "$tmp/cert.txt"
+          actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$tmp/cert.txt" | tr '[:upper:]' '[:lower:]')
+          [[ "$actual" == "$expected" ]]
+          [[ $(grep -c '^Signer #[0-9]* certificate SHA-256 digest:' "$tmp/cert.txt") == 1 ]]
+          "$bt/zipalign" -c -P 16 4 output/DeltaVPN-1.7.3-arm64.apk
+          "$bt/aapt" dump badging output/DeltaVPN-1.7.3-arm64.apk | grep "^package: name='com.delta.vpn' .*versionName='1.7.3'" >/dev/null
+          printf '%s\n' "$actual" > output/DeltaVPN-signing-cert.sha256
+          (cd output && sha256sum DeltaVPN-1.7.3-arm64.apk > DeltaVPN-1.7.3-arm64.apk.sha256)
+          echo "PERMANENT_SIGNATURE_VERIFIED"
+      - name: Publish signed APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="v1.7.2-arm64-test-${GITHUB_RUN_NUMBER}"
-          sha256sum output/DeltaVPN-1.7.2-arm64.apk > output/DeltaVPN-1.7.2-arm64.apk.sha256
-          ls -lh output/
-          if ! gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Delta VPN 1.7.2 ARM64 (test)" --notes "Download DeltaVPN-1.7.2-arm64.apk directly. Source archive is a separate optional download. Android debug-signed test build; real VPN connection not yet device-tested." --draft
-          fi
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber output/DeltaVPN-1.7.2-arm64.apk output/DeltaVPN-1.7.2-arm64.apk.sha256 output/DeltaVPN-source.tar.gz
+          set -euo pipefail
+          tag="v1.7.3-arm64-release-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Delta VPN 1.7.3 ARM64 (signed test)" --notes "Release-mode APK signed with the pinned Delta certificate. Physical-device testing remains required." --draft
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" output/DeltaVPN-1.7.3-arm64.apk output/DeltaVPN-1.7.3-arm64.apk.sha256 output/DeltaVPN-signing-cert.sha256 output/DeltaVPN-source.tar.gz
           gh release edit "$tag" -R "$GITHUB_REPOSITORY" --draft=false --prerelease
