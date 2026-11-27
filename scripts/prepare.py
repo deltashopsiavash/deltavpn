@@ -8,7 +8,7 @@ overlay = Path(__file__).resolve().parents[1] / "delta"
 app = root / "V2rayNG/app"
 src = app / "src/main/java/com/v2ray/ang"
 (src / "delta").mkdir(exist_ok=True)
-for name in ("SubscriptionPolicy.kt", "DeltaSubscriptions.kt", "DeltaAccountApi.kt", "DeltaSessionStore.kt", "DeltaRefreshCursor.kt"):
+for name in ("SubscriptionPolicy.kt", "DeltaSubscriptions.kt", "DeltaAccountApi.kt", "DeltaSessionStore.kt", "DeltaRefreshCursor.kt", "DeltaTraffic.kt", "DeltaTrafficView.kt"):
     shutil.copy2(overlay / name, src / "delta" / name)
 shutil.copy2(overlay / "MainActivity.kt", src / "ui/main/MainActivity.kt")
 endpoint = os.environ.get("DELTA_APP_API_URL", "").strip() or "https://bot.deltajanebishop.ir/deltabotvps/delta_app_api.php"
@@ -41,6 +41,164 @@ state_code = state_code.replace(state_anchor, state_anchor + "\n                
 assert "private fun reloadCore(): Boolean {" in state_code
 state_code = state_code.replace("private fun reloadCore(): Boolean {", "fun reloadDeltaSubscription(): Boolean = reloadCore()\n\n    private fun reloadCore(): Boolean {", 1)
 service_manager.write_text(state_code)
+
+
+# One real Xray counter reader for dashboard and optional notification.
+# Outbound statistics are destructive reads; keep them enabled in the runtime
+# configuration independently of the user's notification display preference.
+def replace_exact(value, old, new):
+    assert value.count(old) == 1, old
+    return value.replace(old, new, 1)
+
+state_code = service_manager.read_text()
+state_code = replace_exact(state_code, "object CoreServiceManager {", """object CoreServiceManager {
+    private val deltaStatsLock = Any()
+    @Volatile private var deltaStatsReady = false
+    @Volatile private var deltaStatsEpoch = 0L
+
+    private fun invalidateDeltaTraffic(): Long = synchronized(deltaStatsLock) {
+        deltaStatsReady = false
+        ++deltaStatsEpoch
+    }
+
+    fun deltaTrafficGeneration(): Long =
+        if (deltaStatsReady) deltaStatsEpoch else -1L
+
+    private fun deltaTrafficConfig(raw: String): String {
+        val json = com.google.gson.JsonParser.parseString(raw).asJsonObject
+        if (!json.has("stats") || !json.get("stats").isJsonObject)
+            json.add("stats", com.google.gson.JsonObject())
+        val policy = json.get("policy")?.takeIf { it.isJsonObject }?.asJsonObject
+            ?: com.google.gson.JsonObject().also { json.add("policy", it) }
+        val system = policy.get("system")?.takeIf { it.isJsonObject }?.asJsonObject
+            ?: com.google.gson.JsonObject().also { policy.add("system", it) }
+        system.addProperty("statsOutboundUplink", true)
+        system.addProperty("statsOutboundDownlink", true)
+        return json.toString()
+    }
+""")
+state_code = replace_exact(state_code, "        coreController.startLoop(result.content, tunFd)", """        val deltaEpoch = invalidateDeltaTraffic()
+        coreController.startLoop(deltaTrafficConfig(result.content), tunFd)
+        synchronized(deltaStatsLock) {
+            if (deltaStatsEpoch == deltaEpoch && isRunning()) deltaStatsReady = true
+        }""")
+state_code = replace_exact(state_code, "    fun stopCoreLoop(): Boolean {", """    fun stopCoreLoop(): Boolean {
+        invalidateDeltaTraffic()
+        NotificationManager.stopSpeedNotification()""")
+state_code = replace_exact(state_code, "            isReloading = true\n", "            isReloading = true\n            invalidateDeltaTraffic()\n")
+state_code = replace_exact(state_code, "    fun queryAllOutboundTrafficStats(): List<OutboundTrafficStat> {", "    fun queryAllOutboundTrafficStats(): List<OutboundTrafficStat> = synchronized(deltaStatsLock) {")
+state_code = replace_exact(state_code, "        if (!isRunning()) return emptyList()", "        if (!deltaStatsReady || !isRunning()) return@synchronized emptyList()")
+state_code = replace_exact(state_code, "//        LogUtil.d(AppConfig.TAG, \"Queried outbound traffic stats: $result\")\n        return result", "        result")
+# Refresh the shared sampler when the UI registers, without starting a second reader.
+state_code = replace_exact(state_code, '                        MessageHelper.sendMsg2UI(serviceControl.getService(), AppConfig.MSG_STATE_RUNNING, "")', '                        NotificationManager.startSpeedNotification()\n                        MessageHelper.sendMsg2UI(serviceControl.getService(), AppConfig.MSG_STATE_RUNNING, "")')
+service_manager.write_text(state_code)
+
+notification = src / "handler/NotificationManager.kt"
+notice = notification.read_text()
+notice = replace_exact(notice, "    private const val QUERY_INTERVAL_MS = 3000L", """    private val deltaTrafficHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val deltaTrafficWindow = com.v2ray.ang.delta.DeltaTrafficWindow()
+    private var deltaSampling = false
+    private var deltaLastNotificationAt = 0L
+    private val deltaTrafficTick = object : Runnable {
+        override fun run() {
+            if (!deltaSampling) return
+            try { deltaReadTraffic() } catch (_: Exception) {
+                deltaTrafficWindow.reset()
+                deltaSendTraffic(android.os.SystemClock.elapsedRealtime(), 0L, 0L)
+            }
+            if (deltaSampling) deltaTrafficHandler.postDelayed(this, com.v2ray.ang.delta.DeltaTraffic.INTERVAL_MS)
+        }
+    }""")
+notice = replace_exact(notice, "    private var lastQueryTime = 0L\n", "")
+notice = replace_exact(notice, "    private var speedNotificationJob: Job? = null\n", "")
+start = notice.index("    fun startSpeedNotification() {")
+end = notice.index("\n    /**", start)
+notice = notice[:start] + """    fun startSpeedNotification() {
+        deltaTrafficHandler.post {
+            if (!CoreServiceManager.isRunning() || deltaSampling) return@post
+            deltaSampling = true
+            deltaTrafficWindow.reset()
+            deltaLastNotificationAt = 0L
+            deltaTrafficHandler.removeCallbacks(deltaTrafficTick)
+            deltaTrafficHandler.post(deltaTrafficTick)
+        }
+    }
+""" + notice[end:]
+notice = replace_exact(notice, "        // Reset last query time to avoid querying stats too soon after showing the notification\n        lastQueryTime = System.currentTimeMillis()\n\n", "")
+notice = replace_exact(notice, "    fun cancelNotification() {\n        val service = getService() ?: return", "    fun cancelNotification() {\n        stopSpeedNotification()\n        val service = getService() ?: return")
+notice = replace_exact(notice, "        speedNotificationJob?.cancel()\n        speedNotificationJob = null\n", "")
+start = notice.index("    fun stopSpeedNotification() {")
+end = notice.index("\n    /**", start)
+notice = notice[:start] + """    fun stopSpeedNotification() {
+        deltaTrafficHandler.post {
+            deltaSampling = false
+            deltaTrafficHandler.removeCallbacks(deltaTrafficTick)
+            deltaTrafficWindow.reset()
+            deltaSendTraffic(android.os.SystemClock.elapsedRealtime(), 0L, 0L)
+            if (MmkvManager.decodeSettingsBool(AppConfig.PREF_SPEED_ENABLED) == true)
+                updateNotification("", 0L, 0L)
+        }
+    }
+""" + notice[end:]
+start = notice.index("    private fun updateSpeedNotificationOnce(")
+end = notice.index("\n    /**", start)
+notice = notice[:start] + """    private fun deltaSendTraffic(now: Long, down: Long, up: Long) {
+        val service = getService() ?: return
+        service.sendBroadcast(Intent(AppConfig.BROADCAST_ACTION_ACTIVITY).apply {
+            setPackage(service.packageName)
+            putExtra("key", com.v2ray.ang.delta.DeltaTraffic.MESSAGE)
+            putExtra(com.v2ray.ang.delta.DeltaTraffic.EXTRA, longArrayOf(now, down, up))
+        })
+    }
+
+    private fun deltaReadTraffic() {
+        val epoch = CoreServiceManager.deltaTrafficGeneration()
+        val stats = if (epoch >= 0L) CoreServiceManager.queryAllOutboundTrafficStats() else emptyList()
+        val now = android.os.SystemClock.elapsedRealtime()
+        val unchanged = epoch >= 0L && epoch == CoreServiceManager.deltaTrafficGeneration()
+        val elapsed = deltaTrafficWindow.interval(now, if (unchanged) epoch else -1L)
+        if (!unchanged || elapsed == null) {
+            deltaSendTraffic(now, 0L, 0L)
+            return
+        }
+        val traffic = com.v2ray.ang.delta.DeltaTraffic
+        var proxyUp = 0L
+        var proxyDown = 0L
+        var directUp = 0L
+        var directDown = 0L
+        for (stat in stats) {
+            when (stat.tag) {
+                AppConfig.TAG_BLOCKED -> Unit
+                AppConfig.TAG_DIRECT -> when (stat.direction) {
+                    AppConfig.UPLINK -> directUp = traffic.add(directUp, stat.value)
+                    AppConfig.DOWNLINK -> directDown = traffic.add(directDown, stat.value)
+                    else -> Unit
+                }
+                else -> when (stat.direction) {
+                    AppConfig.UPLINK -> proxyUp = traffic.add(proxyUp, stat.value)
+                    AppConfig.DOWNLINK -> proxyDown = traffic.add(proxyDown, stat.value)
+                    else -> Unit
+                }
+            }
+        }
+        val up = traffic.rate(proxyUp, elapsed)
+        val down = traffic.rate(proxyDown, elapsed)
+        // Only proxied traffic: exclude direct/bypass and blocked traffic.
+        deltaSendTraffic(now, down, up)
+        // Retain optional upstream notification without reading/resetting counters again.
+        if (MmkvManager.decodeSettingsBool(AppConfig.PREF_SPEED_ENABLED) == true &&
+            now - deltaLastNotificationAt >= 3000L) {
+            val text = StringBuilder()
+            appendSpeedString(text, AppConfig.TAG_PROXY, up.toDouble(), down.toDouble())
+            val directUpRate = traffic.rate(directUp, elapsed)
+            val directDownRate = traffic.rate(directDown, elapsed)
+            appendSpeedString(text, AppConfig.TAG_DIRECT, directUpRate.toDouble(), directDownRate.toDouble())
+            updateNotification(text.toString(), traffic.add(up, down), traffic.add(directUpRate, directDownRate))
+            deltaLastNotificationAt = now
+        }
+    }
+""" + notice[end:]
+notification.write_text(notice)
 
 # Bind each VPN start to the validated monotonic deadline, including in the daemon process.
 launcher = src / "core/LauncherManager.kt"
@@ -135,8 +293,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 21'),
-    ('versionName = "2.3.15"', 'versionName = "1.7.4"'),
+    ('versionCode = 755', 'versionCode = 22'),
+    ('versionName = "2.3.15"', 'versionName = "1.7.5"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
