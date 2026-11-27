@@ -305,25 +305,42 @@ class MainActivity : ComponentActivity() {
         contacts.addView(button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd=dp(8) })
         contacts.addView(button(tr("پشتیبانی","Support"),panel){openContact("support")},LinearLayout.LayoutParams(0,dp(50),1f))
         put(login,contacts,10)
-        put(login, centered("v1.7.0", 11, muted), 20)
+        put(login, centered("v1.7.1", 11, muted), 20)
 
         val menuButton=button("☰",panel){showDrawer()}
         menuButton.contentDescription=tr("منوی حساب","Account menu")
         val header=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
         header.addView(menuButton,LinearLayout.LayoutParams(dp(52),dp(48)))
         header.addView(View(this),LinearLayout.LayoutParams(0,1,1f))
-        val bellFrame=FrameLayout(this)
+        val bellFrame=FrameLayout(this).apply { clipChildren=false;clipToPadding=false }
         newsBell=button("🔔",panel){showNewsInbox()}.apply{
             contentDescription=tr("اطلاع‌رسانی","Announcements")
+            // Native Button's animated Z can cover the overlay, even if it is
+            // added earlier. Keep both header button and its badge at fixed Z.
+            stateListAnimator=null
+            elevation=0f
+            translationZ=0f
         }
         bellFrame.addView(newsBell,FrameLayout.LayoutParams(dp(52),dp(48),Gravity.CENTER))
-        newsBadge=centered("",11,Color.WHITE,true).apply{
-            background=shape(red,12);minWidth=dp(22);setPadding(dp(4),0,dp(4),0)
-            visibility=View.GONE;isClickable=false;isFocusable=false
+        newsBadge=centered("",12,Color.WHITE,true).apply{
+            background=shape(Color.parseColor("#D93243"),12,navy)
+            minWidth=dp(24)
+            setPadding(dp(5),0,dp(5),0)
+            includeFontPadding=false
+            maxLines=1
             gravity=Gravity.CENTER
+            elevation=dp(8).toFloat()
+            visibility=View.GONE
+            isClickable=false
+            isFocusable=false
+            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        bellFrame.addView(newsBadge,FrameLayout.LayoutParams(-2,dp(20),Gravity.TOP or Gravity.END))
-        header.addView(bellFrame,LinearLayout.LayoutParams(dp(58),dp(52)))
+        bellFrame.addView(newsBadge,FrameLayout.LayoutParams(-2,dp(24),Gravity.TOP or Gravity.END).apply {
+            topMargin=dp(1)
+            marginEnd=dp(1)
+        })
+        newsBadge.bringToFront()
+        header.addView(bellFrame,LinearLayout.LayoutParams(dp(64),dp(56)))
         put(dashboard,header)
         put(dashboard, centered("DELTA VPN", 30, fg, true), 0)
         put(dashboard, roundLogo(), 14, dp(78), dp(78), Gravity.CENTER_HORIZONTAL)
@@ -376,7 +393,7 @@ class MainActivity : ComponentActivity() {
         servers=column();put(serverSection,servers,8)
         put(dashboard,serverSection)
         dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
-        put(dashboard, centered("v1.7.0",11,muted),16)
+        put(dashboard, centered("v1.7.1",11,muted),16)
 
         drawer=FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt());visibility=View.GONE;setOnClickListener{hideDrawer()} }
         val drawerScroll=ScrollView(this).apply { isFillViewport=true;setBackgroundColor(navy);isClickable=true }
@@ -395,7 +412,7 @@ class MainActivity : ComponentActivity() {
         put(menu,refreshButton,10)
         clearButton=button(tr("خروج از حساب","Sign out"),Color.parseColor("#A52F42")){requestSignOut()}
         put(menu,clearButton,10)
-        put(menu,centered("v1.7.0",11,muted),16)
+        put(menu,centered("v1.7.1",11,muted),16)
         shell.addView(drawer,FrameLayout.LayoutParams(-1,-1))
         deviceScreen=FrameLayout(this).apply{setBackgroundColor(navy);visibility=View.GONE;isClickable=true}
         val deviceScroll=ScrollView(this).apply{isFillViewport=true}
@@ -645,6 +662,7 @@ class MainActivity : ComponentActivity() {
         val n=newsFeed?.unread?:0
         newsBadge.visibility=if(n>0)View.VISIBLE else View.GONE
         newsBadge.text=if(n>99)"99+" else n.toString()
+        if(n>0)newsBadge.bringToFront()
         newsBell.contentDescription=tr("اطلاع‌رسانی، $n خوانده نشده","Announcements, $n unread")
     }
     private fun refreshNews(force:Boolean=false){
