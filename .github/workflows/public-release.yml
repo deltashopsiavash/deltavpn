@@ -1,0 +1,128 @@
+name: Publish Delta VPN to public downloads
+on:
+  workflow_run:
+    workflows: ["Delta VPN Android"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing signed private release tag (initial publication or retry)
+        required: true
+        type: string
+        default: v1.7.7-arm64-release-47
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: delta-public-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'deltashopsiavash/deltavpn' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve signed release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          MANUAL_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == workflow_run ]]; then
+            [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_NUMBER" =~ ^[0-9]+$ && "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]]
+            signed=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" --jq 'any(.jobs[]; .name == "publish" and .conclusion == "success")')
+            if [[ "$signed" != true ]]; then
+              echo "Ordinary build without signed release; nothing to publish."
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            tag=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.target_commitish == \"$HEAD_SHA\" and .draft == false and .prerelease == true and (.tag_name | endswith(\"-arm64-release-$RUN_NUMBER\"))) | .tag_name")
+          else
+            tag="$MANUAL_TAG"
+          fi
+          [[ "$tag" =~ ^v((0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3}))-arm64-release-[0-9]+$ ]]
+          version="${BASH_REMATCH[1]}"
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets > release.json
+          jq -e --arg apk "DeltaVPN-$version-arm64.apk" '
+            .isDraft == false and .isPrerelease == true and
+            ([.assets[].name] | sort) == ([$apk,($apk+".sha256"),"DeltaVPN-signing-cert.sha256","DeltaVPN-source.tar.gz"] | sort)
+          ' release.json >/dev/null
+          mkdir -p output
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -D output \
+            -p "DeltaVPN-$version-arm64.apk" -p "DeltaVPN-$version-arm64.apk.sha256" \
+            -p DeltaVPN-signing-cert.sha256 -p DeltaVPN-source.tar.gz
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+      - name: Verify APK and signing certificate
+        if: steps.release.outputs.ready == 'true'
+        uses: android-actions/setup-android@v4
+        with:
+          cmdline-tools-version: '14742923'
+          packages: 'build-tools;37.0.0'
+      - name: Validate APK hash and permanent certificate
+        if: steps.release.outputs.ready == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          CERT: ${{ vars.DELTA_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          cd output
+          apk="DeltaVPN-$VERSION-arm64.apk"
+          expected=$(printf '%s' "$CERT" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+          [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$(tr -d '[:space:]' < DeltaVPN-signing-cert.sha256)" == "$expected" ]]
+          read -r hash filename extra < "$apk.sha256"
+          [[ "$hash" =~ ^[0-9a-f]{64}$ && "$filename" == "$apk" && -z "$extra" ]]
+          [[ "$(sha256sum "$apk" | cut -d ' ' -f1)" == "$hash" ]]
+          bt="$ANDROID_HOME/build-tools/37.0.0"
+          "$bt/apksigner" verify --verbose --print-certs "$apk" > cert.txt
+          grep -Eiq "^Number of signers:[[:space:]]*1$" cert.txt
+          actual=$(grep -Ei '^Signer #1 certificate SHA-256 digest:' cert.txt | head -n1 | cut -d: -f2- | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+          [[ "$actual" == "$expected" ]]
+          "$bt/aapt" dump badging "$apk" > badging.txt
+          grep -F "name='com.delta.vpn'" badging.txt | grep -F "versionName='$VERSION'" >/dev/null
+          test -s DeltaVPN-source.tar.gz
+      - name: Publish stable official release
+        if: steps.release.outputs.ready == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DELTA_PUBLIC_RELEASE_TOKEN }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?Configure DELTA_PUBLIC_RELEASE_TOKEN in private repository Actions secrets}"
+          repo=deltacoms/deltavpn
+          tag="v$VERSION"
+          apk="DeltaVPN-$VERSION-arm64.apk"
+          latest=$(gh api "repos/$repo/releases/latest" --jq .tag_name)
+          [[ "$latest" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ "$latest" != "$tag" && "$(printf '%s\n%s\n' "$latest" "$tag" | sort -V | tail -n1)" != "$tag" ]]; then
+            echo "A newer public release exists; refusing downgrade."
+            exit 1
+          fi
+          if gh release view "$tag" -R "$repo" --json isDraft,isPrerelease,assets > existing.json 2>/dev/null; then
+            if jq -e '.isDraft == false and .isPrerelease == false' existing.json >/dev/null; then
+              mkdir -p existing
+              gh release download "$tag" -R "$repo" -D existing \
+                -p "$apk" -p "$apk.sha256" -p DeltaVPN-signing-cert.sha256 -p DeltaVPN-source.tar.gz
+              for f in "$apk" "$apk.sha256" DeltaVPN-signing-cert.sha256 DeltaVPN-source.tar.gz; do
+                cmp "output/$f" "existing/$f"
+              done
+              echo "Identical stable release already published."
+              exit 0
+            fi
+            echo "Existing unfinished release requires owner inspection before retry."
+            exit 1
+          fi
+          gh release create "$tag" -R "$repo" --target main --draft \
+            --title "Delta VPN $VERSION | نسخه رسمی" \
+            --notes "نسخه رسمی دلتا وی‌پی‌ان. فایل APK اندروید ARM64 به همراه SHA256 و سورس متناظر."
+          gh release upload "$tag" -R "$repo" \
+            "output/$apk" "output/$apk.sha256" output/DeltaVPN-signing-cert.sha256 output/DeltaVPN-source.tar.gz
+          gh release edit "$tag" -R "$repo" --draft=false --prerelease=false --latest
+          echo "Public release published: https://github.com/$repo/releases/tag/$tag"
