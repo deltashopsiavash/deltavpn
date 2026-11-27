@@ -70,3 +70,6 @@ The account drawer retains subscription refresh and adds an APK download button 
 
 ## 1.7.7 — cleaner account drawer
 Remove the manual subscription refresh button and the visible last-received counter and delayed-update message in both languages. Keep automatic polling, quota/expiry enforcement, and the remotely controlled official app update button. Last-known quota is muted if a status poll fails; no delay label is shown. No backend change required. Device testing remains required.
+
+## 1.7.8 — preserve sessions across panel edits
+Transient catalog/API/import failures no longer delete the signed-in account or last usable catalog. The API can return authenticated quota separately from unavailable configs (new client opt-in). The app retries while disconnected, retries stored-session restoration, and validates a fresh catalog before starting a tunnel. Explicit authenticated session revocation still removes access; expired or exhausted subscriptions still cannot connect. Existing quiet/forced refresh policy remains. Verify on physical device by changing a panel node while connected/disconnected, injecting temporary API errors, recovering, and explicitly revoking a test session.

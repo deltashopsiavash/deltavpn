@@ -122,6 +122,8 @@ class MainActivity : ComponentActivity() {
     private var account: DeltaAccount? = null
     private lateinit var sessionStore: DeltaSessionStore
     private var restoreAttempted = false
+    private var restoreRetryAt = 0L
+    private var catalogPending = false
     private val accountApi = DeltaAccountApi()
     private var stateKnown = false
     private var stateQueryGeneration = 0
@@ -683,14 +685,14 @@ class MainActivity : ComponentActivity() {
             powerPulse=ValueAnimator.ofFloat(1f,0.94f,1f).apply{duration=1000;repeatCount=ValueAnimator.INFINITE;addUpdateListener{val v=it.animatedValue as Float;connect.scaleX=v;connect.scaleY=v};start()}
         }else if(!transitioning){powerPulse?.cancel();powerPulse=null;connect.scaleX=1f;connect.scaleY=1f}
         connect.contentDescription = if (running) tr("قطع اتصال","Disconnect") else tr("اتصال","Connect")
-        connect.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest == null && (running || (account?.canConnect == true && repo.canConnect()))
+        connect.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest == null && (running || account?.canConnect == true || (account!=null && usageStale))
         connect.alpha = if (connect.isEnabled) 1f else 0.55f
         status.setTextColor(if (running) green else muted)
         val editable = ready && stateKnown && !busy && !transitioning && !running && pingRequest == null
         val loginEditable = !busy && !running && !transitioning
         importButton.isEnabled = loginEditable; input.isEnabled = loginEditable; password.isEnabled = loginEditable
         clearButton.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest==null && account!=null
-        quickButton.isEnabled=editable && account?.canConnect==true && repo.servers.isNotEmpty()
+        quickButton.isEnabled=editable && (account?.canConnect==true || (account!=null && usageStale))
         accountName.text=tr("نام کاربری: ","Username: ")+(account?.username?:"—")
         syncNewsIdentity()
         if(account==null)appUpdate=null
@@ -946,6 +948,7 @@ class MainActivity : ComponentActivity() {
             val now = android.os.SystemClock.elapsedRealtime()
             if(newsForeground&&account!=null&&now-newsLastPoll>=30000L)refreshNews()
             if(newsForeground&&account!=null&&drawer.visibility==View.VISIBLE)refreshAppUpdate()
+            if (restoreRetryAt>0L && now>=restoreRetryAt && newsForeground && !busy && ready && stateKnown && account==null) maybeRestore(true)
             if (ready && stateKnown && account != null && !busy && !transitioning && pingRequest==null && now-lastPoll>=30000L) {
                 lastPoll=now
                 pollUsage()
@@ -956,6 +959,7 @@ class MainActivity : ComponentActivity() {
     private fun maybeRestore(force: Boolean = false) {
         if (!ready || !stateKnown || busy || account != null || (restoreAttempted && !force)) return
         restoreAttempted = true
+        restoreRetryAt=0L
         val token = sessionStore.read()
         if (token == null) {
             starting = false
@@ -968,24 +972,41 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
                 val a = accountApi.session(token, stableDeviceId())
-                if (!wasRunning) checkedImport(a)
-                a
+                a to (wasRunning || tryImport(a))
             } }
             busy = false
             starting = false
-            result.onSuccess { account = it; if (!it.canConnect && running) LauncherManager.stopService(this@MainActivity); render(if (it.canConnect) tr("به دلتا خوش آمدید","Welcome to Delta") else tr("اشتراک فعال قابل اتصال نیست.","Subscription cannot connect.")) }.onFailure {
-                val invalid = it is DeltaApiException && it.status in listOf(401, 409)
-                if (invalid) sessionStore.clear()
-                if (running) LauncherManager.stopService(this@MainActivity)
-                else repo.clear()
-                render(if (invalid) tr("نشست منقضی یا لغو شده؛ دوباره وارد شوید.","Session expired or revoked. Sign in again.") else tr("ورود خودکار ناموفق بود؛ برای تلاش دوباره ورود را بزنید.","Automatic sign-in failed. Tap Sign in to retry."))
+            result.onSuccess { (a, imported) ->
+                account=a; catalogPending=!imported; usageStale=false
+                if (!a.canConnect && running) LauncherManager.stopService(this@MainActivity)
+                render(if (!a.canConnect) tr("اشتراک فعال قابل اتصال نیست.","Subscription cannot connect.") else if(!imported) catalogRetryMessage() else tr("به دلتا خوش آمدید","Welcome to Delta"))
+            }.onFailure {
+                if (it is DeltaApiException && it.sessionRevoked) {
+                    invalidateSession()
+                } else {
+                    // A valid saved login survives temporary panel/API/import errors.
+                    starting=true; restoreRetryAt=SystemClock.elapsedRealtime()+15000L
+                    render(); startupStatus.text=tr("در حال تلاش مجدد برای دریافت اشتراک…","Retrying subscription retrieval…")
+                }
             }
         }
     }
-    private fun checkedImport(a: DeltaAccount) {
-        // Expired accounts may view their dashboard; only active subscriptions receive configs.
-        repo.refresh(if (a.canConnect) a.configs else emptyList())
-        DeltaRefreshCursor(a.token).applied(a,true)
+    private fun catalogRetryMessage()=tr("دریافت سرورها موقتاً ناموفق است؛ دوباره تلاش کنید.","Server list temporarily unavailable. Try again.")
+    private fun invalidateSession(){
+        account?.let{DeltaRefreshCursor(it.token).clear()}
+        account=null; sessionStore.clear(); catalogPending=false; restoreRetryAt=0L; usageStale=false
+        if(running) LauncherManager.stopService(this@MainActivity) else repo.clear()
+        delays.clear()
+        render(tr("نشست لغو شده یا منقضی شده است؛ دوباره وارد شوید.","Session revoked or expired. Sign in again."))
+    }
+    private fun tryImport(a: DeltaAccount):Boolean {
+        // Do not replace a previously good catalog with a partial/empty active response.
+        if(a.canConnect && (!a.configsReady || a.configs.isEmpty()))return false
+        return runCatching {
+            repo.refresh(if (a.canConnect) a.configs else emptyList())
+            DeltaRefreshCursor(a.token).applied(a,true)
+            true
+        }.getOrDefault(false)
     }
     private fun signIn() {
         if (busy || running || transitioning) return
@@ -1001,10 +1022,14 @@ class MainActivity : ComponentActivity() {
             val result = withContext(Dispatchers.IO) { runCatching {
                 repo.clear()
                 val a = accountApi.login(name, secret, deviceId(), (android.os.Build.MANUFACTURER+" "+android.os.Build.MODEL).take(25), legacyDeviceId())
-                try { checkedImport(a); sessionStore.save(a.token); a } catch (e: Exception) { repo.clear(); runCatching { accountApi.logout(a.token) }; throw e }
+                try { sessionStore.save(a.token) } catch (e: Exception) { runCatching { accountApi.logout(a.token) }; throw e }
+                a to tryImport(a)
             } }
             busy = false;manualLogin=false
-            result.onSuccess { account = it; delays.clear(); input.text.clear(); render(if (repo.servers.isEmpty()) tr("کانفیگ اختصاصی فعال در دسترس نیست.","No active dedicated server available.") else tr("به دلتا خوش آمدید","Welcome to Delta")) }
+            result.onSuccess { (a, imported) ->
+                account=a; catalogPending=!imported; usageStale=false; delays.clear(); input.text.clear()
+                render(if (!imported) catalogRetryMessage() else if (repo.servers.isEmpty()) tr("کانفیگ اختصاصی فعال در دسترس نیست.","No active dedicated server available.") else tr("به دلتا خوش آمدید","Welcome to Delta"))
+            }
                 .onFailure { account = null; render(when {
                     it is DeltaApiException && it.status==409 && it.reason=="device_limit" -> tr("ظرفیت دستگاه‌ها تکمیل است. از ربات دلتا، /buy ← سرویس‌های من ← دستگاه‌های متصل، فقط دستگاه قبلی را خارج کنید و دوباره وارد شوید.","Device limit reached. In the Delta bot, open /buy → My services → Devices, remove the old device, and sign in again.")
                     it is DeltaApiException && it.status==409 && it.reason=="dedicated_required" -> tr("حساب هنوز آماده اتصال نیست؛ با پشتیبانی تماس بگیرید.","Account not ready; contact support.")
@@ -1023,24 +1048,23 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val result=withContext(Dispatchers.IO) { runCatching {
                 val current=accountApi.status(previous.token)
-                if(!wasRunning&&DeltaRefreshCursor(previous.token).due(current)&&current.canConnect){
-                    val updated=accountApi.session(previous.token, stableDeviceId());checkedImport(updated);updated
-                }else current
+                if(!wasRunning&&current.canConnect&&(catalogPending || !previous.canConnect || repo.servers.isEmpty() || DeltaRefreshCursor(previous.token).due(current))){
+                    val loaded=runCatching { accountApi.session(previous.token, stableDeviceId()) }
+                    val failure=loaded.exceptionOrNull()
+                    if(failure is DeltaApiException && failure.sessionRevoked)throw failure
+                    val updated=loaded.getOrNull()
+                    if(updated==null) current to false else updated to tryImport(updated)
+                }else current to null
             } }
             busy=false
-            result.onSuccess { updated ->
+            result.onSuccess { (updated, imported) ->
                 account=updated;usageStale=false
+                if(imported!=null)catalogPending=!imported
                 if (!updated.canConnect && running) LauncherManager.stopService(this@MainActivity)
-                render(if (!updated.canConnect) tr("حجم یا اعتبار یا دسترسی اشتراک به پایان رسیده است.","Subscription data, validity or access has ended.") else null)
+                render(if (!updated.canConnect) tr("حجم یا اعتبار یا دسترسی اشتراک به پایان رسیده است.","Subscription data, validity or access has ended.") else if(imported==false) catalogRetryMessage() else null)
             }.onFailure {
-                if (it is DeltaApiException && it.status==401) {
-                    account=null;sessionStore.clear()
-                    if(running) LauncherManager.stopService(this@MainActivity) else repo.clear()
-                    render(tr("نشست لغو شده است.","Session revoked."))
-                } else {
-                    usageStale=true
-                    render()
-                }
+                if (it is DeltaApiException && it.sessionRevoked) invalidateSession()
+                else { usageStale=true; render() }
             }
         }
     }
@@ -1052,21 +1076,22 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
                 val updated = accountApi.session(previous.token, stableDeviceId())
-                checkedImport(updated)
-                updated
+                updated to tryImport(updated)
             } }
             busy = false
-            result.onSuccess {
-                account = it; delays.clear(); render(if (repo.servers.isEmpty()) tr("کانفیگ اختصاصی فعال در دسترس نیست.","No active dedicated server available.") else tr("اعتبار حساب تأیید شد.","Subscription verified."))
-                if(quickAfter && it.canConnect && repo.servers.isNotEmpty())testServers(true)
-                else if (connectAfter && it.canConnect && repo.canConnect()) {
+            result.onSuccess { (updated, imported) ->
+                account=updated;catalogPending=!imported;usageStale=false
+                if(!imported){render(catalogRetryMessage());return@onSuccess}
+                delays.clear()
+                render(if (!updated.canConnect || repo.servers.isEmpty()) tr("کانفیگ اختصاصی فعال در دسترس نیست.","No active dedicated server available.") else tr("اعتبار حساب تأیید شد.","Subscription verified."))
+                if(quickAfter && updated.canConnect && repo.servers.isNotEmpty())testServers(true)
+                else if (connectAfter && updated.canConnect && repo.canConnect()) {
                     val request = VpnService.prepare(this@MainActivity)
                     if (request == null) startTunnel() else permission.launch(request)
                 }
             }.onFailure {
-                account = null; repo.clear(); delays.clear()
-                if (it is DeltaApiException && it.status == 401) sessionStore.clear()
-                render(tr("اعتبار حساب یا اتصال به سرور تأیید نشد؛ دوباره تلاش کنید.","Account or server verification failed. Try again."))
+                if (it is DeltaApiException && it.sessionRevoked) invalidateSession()
+                else {catalogPending=true;usageStale=true;render(catalogRetryMessage())}
             }
         }
     }
@@ -1074,7 +1099,7 @@ class MainActivity : ComponentActivity() {
         if (busy || running || transitioning || pingRequest != null) return
         val previous = account
         previous?.let{DeltaRefreshCursor(it.token).clear()}
-        account = null; sessionStore.clear(); repo.clear(); delays.clear(); input.text.clear(); password.text.clear();hideDrawer();serverSection.visibility=View.GONE
+        account = null; sessionStore.clear(); catalogPending=false; restoreRetryAt=0L; usageStale=false; repo.clear(); delays.clear(); input.text.clear(); password.text.clear();hideDrawer();serverSection.visibility=View.GONE
         render(tr("از حساب خارج شدید.","Signed out."))
         if (previous != null) lifecycleScope.launch(Dispatchers.IO) { runCatching { accountApi.logout(previous.token) } }
     }
@@ -1082,7 +1107,7 @@ class MainActivity : ComponentActivity() {
         if (running) {
             transitioning = true; render(tr("در حال قطع اتصال…","Disconnecting…"))
             LauncherManager.stopService(this); timer.postDelayed(timeout, 15000)
-        } else if (account != null && repo.canConnect()) {
+        } else if (account != null) {
             validateAccount(true)
         }
     }

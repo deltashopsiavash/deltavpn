@@ -11,14 +11,16 @@ import java.net.Proxy
 import java.net.URI
 import java.util.concurrent.TimeUnit
 
-data class DeltaAccount(val token: String, val username: String, val configs: List<String>, val gb: Double, val expires: Long, val serverNow: Long, val receivedElapsed: Long, val limitBytes: Long, val usedBytes: Long, val remainingBytes: Long, val canConnect: Boolean, val panelStatus: String, val refreshMinutes: Int = 5, val refreshRevision: Long = 0, val reconnectRevision: Long = 0) {
+data class DeltaAccount(val token: String, val username: String, val configs: List<String>, val gb: Double, val expires: Long, val serverNow: Long, val receivedElapsed: Long, val limitBytes: Long, val usedBytes: Long, val remainingBytes: Long, val canConnect: Boolean, val panelStatus: String, val refreshMinutes: Int = 5, val refreshRevision: Long = 0, val reconnectRevision: Long = 0, val configsReady: Boolean = true) {
     val deadlineElapsed: Long get() = receivedElapsed + (expires-serverNow).coerceAtLeast(0)*1000L
     fun remainingSeconds(): Long = ((deadlineElapsed-SystemClock.elapsedRealtime()).coerceAtLeast(0)+999)/1000
 }
 data class DeltaNewsItem(val id: Long, val body: String, val url: String, val buttonLabel: String, val created: Long, val read: Boolean)
 data class DeltaNewsFeed(val unread: Int, val news: List<DeltaNewsItem>, val nextBefore: Long, val floating: DeltaNewsItem?)
 data class DeltaAppUpdate(val version:String,val url:String)
-class DeltaApiException(val status: Int, val reason: String = ""): Exception()
+class DeltaApiException(val status: Int, val reason: String = ""): Exception() {
+    val sessionRevoked: Boolean get() = status == 401 && reason == "session"
+}
 
 class DeltaAccountApi {
     private val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
@@ -44,7 +46,7 @@ class DeltaAccountApi {
     }
     private fun decode(r: JsonObject): DeltaAccount {
         val a = DeltaAccount(r.get("token").asString, r.get("username").asString,
-            r.getAsJsonArray("configs").map { it.asString }, r.get("gb").asDouble, r.get("expires").asLong, r.get("server_now").asLong, SystemClock.elapsedRealtime(), r.get("limit_bytes").asLong, r.get("used_bytes").asLong, r.get("remaining_bytes").asLong, r.get("can_connect").asBoolean, r.get("panel_status").asString, r.get("refresh_minutes")?.asInt ?: 5, r.get("refresh_revision")?.asLong ?: 0, r.get("reconnect_revision")?.asLong ?: 0)
+            r.getAsJsonArray("configs").map { it.asString }, r.get("gb").asDouble, r.get("expires").asLong, r.get("server_now").asLong, SystemClock.elapsedRealtime(), r.get("limit_bytes").asLong, r.get("used_bytes").asLong, r.get("remaining_bytes").asLong, r.get("can_connect").asBoolean, r.get("panel_status").asString, r.get("refresh_minutes")?.asInt ?: 5, r.get("refresh_revision")?.asLong ?: 0, r.get("reconnect_revision")?.asLong ?: 0, r.get("configs_ready")?.asBoolean ?: true)
         check(a.refreshMinutes in 1..1440 && a.refreshRevision>=0 && a.reconnectRevision in 0..a.refreshRevision && r.get("quota_enforced").asBoolean && kotlin.math.abs(a.limitBytes.toDouble()-a.gb*1073741824.0)<1.0 && a.usedBytes >= 0 && a.remainingBytes == (a.limitBytes-a.usedBytes).coerceAtLeast(0) && (!a.canConnect || (a.remainingBytes>0 && a.panelStatus=="active")) && a.token.matches(Regex("[a-f0-9]{64}")) && a.configs.size <= 1000 && a.gb > 0 &&
             a.expires-a.serverNow <= 3650L*86400L)
         return a
@@ -71,11 +73,11 @@ class DeltaAccountApi {
         }
     }
     fun login(name: String, password: String, device: String, model: String, legacy: String? = null) = decode(call(JsonObject().apply {
-        addProperty("action","login"); addProperty("username",name); addProperty("password",password);addProperty("device_id",device);addProperty("device_model",model)
+        addProperty("action","login"); addProperty("allow_partial",true); addProperty("username",name); addProperty("password",password);addProperty("device_id",device);addProperty("device_model",model)
         if(!legacy.isNullOrBlank() && legacy!=device)addProperty("legacy_device_id",legacy)
     }))
     fun session(token: String, stableDevice: String? = null) = decode(call(JsonObject().apply {
-        addProperty("action","session"); addProperty("token",token)
+        addProperty("action","session"); addProperty("allow_partial",true); addProperty("token",token)
         if(!stableDevice.isNullOrBlank())addProperty("stable_device_id",stableDevice)
     }))
     fun status(token: String) = decode(call(JsonObject().apply {

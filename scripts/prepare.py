@@ -240,7 +240,7 @@ for old,new in [
                         // Renewed accounts may extend the already-running session deadline.
                         deltaDeadline=a.deadlineElapsed
                         val cursor=com.v2ray.ang.delta.DeltaRefreshCursor(token)
-                        if(a.configs.isNotEmpty() && cursor.due(a)){
+                        if(a.configsReady && a.configs.isNotEmpty() && cursor.due(a)){
                             runCatching {
                                 val repo=com.v2ray.ang.delta.DeltaSubscriptions(this@CoreVpnService)
                                 repo.refresh(a.configs,true)
@@ -253,7 +253,7 @@ for old,new in [
                             }
                         }
                     }.onFailure {
-                        if(it is com.v2ray.ang.delta.DeltaApiException && it.status in listOf(401,409))stopAllService()
+                        if(it is com.v2ray.ang.delta.DeltaApiException && (it.sessionRevoked || (it.status==409 && it.reason=="dedicated_required")))stopAllService()
                     }
                     if(isRunning&&generation==deltaGeneration)deltaHandler.postDelayed(this,30000L)
                 }
@@ -293,8 +293,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 24'),
-    ('versionName = "2.3.15"', 'versionName = "1.7.7"'),
+    ('versionCode = 755', 'versionCode = 25'),
+    ('versionName = "2.3.15"', 'versionName = "1.7.8"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
