@@ -102,22 +102,51 @@ jobs:
           : "${DELTA_KEYSTORE_B64:?Missing permanent keystore}"
           : "${DELTA_KEYSTORE_PASSWORD:?Missing keystore password}"
           : "${DELTA_CERT_SHA256:?Missing pinned signing certificate fingerprint}"
+          fail() { echo "::error::$1"; exit 1; }
           expected=$(printf '%s' "$DELTA_CERT_SHA256" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
-          [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || fail "Pinned certificate fingerprint is not 64 hexadecimal characters."
           tmp=$(mktemp -d)
           trap 'rm -rf "$tmp"' EXIT
-          printf '%s' "$DELTA_KEYSTORE_B64" | base64 --decode > "$tmp/delta.p12"
+          printf '%s' "$DELTA_KEYSTORE_B64" | base64 --decode > "$tmp/delta.p12" || fail "Invalid keystore encoding."
           unset DELTA_KEYSTORE_B64
+          keytool -exportcert -keystore "$tmp/delta.p12" -storetype PKCS12 -alias delta-release -storepass:env DELTA_KEYSTORE_PASSWORD -file "$tmp/cert.der" || fail "Cannot open the configured signing key."
+          keyfp=$(sha256sum "$tmp/cert.der" | cut -d' ' -f1)
+          [[ "$keyfp" == "$expected" ]] || fail "Keystore certificate does not match the pinned certificate."
+          echo "KEYSTORE_CERTIFICATE_MATCH"
           bt="$ANDROID_HOME/build-tools/37.0.0"
-          "$bt/zipalign" -P 16 -f 4 output/DeltaVPN-unsigned.apk "$tmp/aligned.apk"
-          "$bt/apksigner" sign --ks "$tmp/delta.p12" --ks-type PKCS12 --ks-key-alias delta-release --ks-pass env:DELTA_KEYSTORE_PASSWORD --key-pass env:DELTA_KEYSTORE_PASSWORD --out output/DeltaVPN-1.7.3-arm64.apk "$tmp/aligned.apk"
+          "$bt/zipalign" -P 16 -f 4 output/DeltaVPN-unsigned.apk "$tmp/aligned.apk" || fail "APK alignment failed."
+          echo "APK_ALIGNED"
+          "$bt/apksigner" sign --ks "$tmp/delta.p12" --ks-type PKCS12 --ks-key-alias delta-release --ks-pass env:DELTA_KEYSTORE_PASSWORD --key-pass env:DELTA_KEYSTORE_PASSWORD --out output/DeltaVPN-1.7.3-arm64.apk "$tmp/aligned.apk" || fail "APK signing failed."
           unset DELTA_KEYSTORE_PASSWORD
-          "$bt/apksigner" verify --verbose --print-certs output/DeltaVPN-1.7.3-arm64.apk > "$tmp/cert.txt"
-          actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$tmp/cert.txt" | tr '[:upper:]' '[:lower:]')
-          [[ "$actual" == "$expected" ]]
-          [[ $(grep -c '^Signer #[0-9]* certificate SHA-256 digest:' "$tmp/cert.txt") == 1 ]]
-          "$bt/zipalign" -c -P 16 4 output/DeltaVPN-1.7.3-arm64.apk
-          "$bt/aapt" dump badging output/DeltaVPN-1.7.3-arm64.apk | grep "^package: name='com.delta.vpn' .*versionName='1.7.3'" >/dev/null
+          echo "APK_SIGNED"
+          "$bt/apksigner" verify --verbose --print-certs output/DeltaVPN-1.7.3-arm64.apk > "$tmp/cert.txt" || fail "APK signature verification failed."
+          cat "$tmp/cert.txt"
+          # Accept harmless formatting differences across Android build-tools versions.
+          actual=$(python3 - "$tmp/cert.txt" <<'PY'
+          import re, sys
+          data = open(sys.argv[1], encoding="utf-8").read()
+          rows = re.findall(r"(?im)^\s*Signer\s+#(\d+)\s+certificate\s+SHA-256\s+digest\s*:\s*([0-9a-f:]+)\s*$", data)
+          if len(rows) != 1 or rows[0][0] != "1":
+              sys.exit("Expected exactly one APK signer certificate digest")
+          digest = rows[0][1].replace(":", "").lower()
+          if not re.fullmatch(r"[0-9a-f]{64}", digest):
+              sys.exit("Invalid APK signer certificate digest")
+          print(digest)
+          PY
+          ) || fail "Unable to read exactly one verified signer."
+          [[ "$actual" == "$expected" ]] || fail "Signed APK certificate differs from pinned certificate."
+          echo "APK_CERTIFICATE_MATCH"
+          "$bt/zipalign" -c -P 16 4 output/DeltaVPN-1.7.3-arm64.apk || fail "Signed APK alignment verification failed."
+          echo "SIGNED_ALIGNMENT_OK"
+          "$bt/aapt" dump badging output/DeltaVPN-1.7.3-arm64.apk > "$tmp/badging.txt" || fail "Unable to inspect APK manifest."
+          python3 - "$tmp/badging.txt" <<'PY'
+          import re, sys
+          line = next((s for s in open(sys.argv[1], encoding="utf-8") if s.startswith("package:")), "")
+          attrs = dict(re.findall(r"(\w+)='([^']*)'", line))
+          if attrs.get("name") != "com.delta.vpn" or attrs.get("versionName") != "1.7.3":
+              sys.exit("Unexpected APK package/version: " + repr({k: attrs.get(k) for k in ("name", "versionName")}))
+          print("APK_PACKAGE_VERSION_OK")
+          PY
           printf '%s\n' "$actual" > output/DeltaVPN-signing-cert.sha256
           (cd output && sha256sum DeltaVPN-1.7.3-arm64.apk > DeltaVPN-1.7.3-arm64.apk.sha256)
           echo "PERMANENT_SIGNATURE_VERIFIED"
