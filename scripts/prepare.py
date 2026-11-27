@@ -135,8 +135,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 20'),
-    ('versionName = "2.3.15"', 'versionName = "1.7.3"'),
+    ('versionCode = 755', 'versionCode = 21'),
+    ('versionName = "2.3.15"', 'versionName = "1.7.4"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
@@ -179,6 +179,18 @@ for node in list(application):
                 child.set(a+"value","false")
 assert any(n.get(a+"name")==".ui.main.MainActivity" for n in application)
 tree.write(manifest, encoding="utf-8", xml_declaration=True)
+
+# The account API must use the system CA store, even though the upstream VPN
+# application permits user-installed CAs for other networking features.
+network_config = app / "src/main/res/xml/network_security_config.xml"
+network_tree = ET.parse(network_config)
+network_root = network_tree.getroot()
+assert network_root.tag == "network-security-config"
+api_config = ET.SubElement(network_root, "domain-config", {"cleartextTrafficPermitted": "false"})
+ET.SubElement(api_config, "domain", {"includeSubdomains": "false"}).text = urlsplit(endpoint).hostname
+anchors = ET.SubElement(api_config, "trust-anchors")
+ET.SubElement(anchors, "certificates", {"src": "system"})
+network_tree.write(network_config, encoding="utf-8", xml_declaration=True)
 
 # Keep credentials out of Android cloud/device-transfer backups.
 for node in (app / "src/main/res").glob("values*/strings.xml"):

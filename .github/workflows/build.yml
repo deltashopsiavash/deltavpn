@@ -151,10 +151,10 @@ jobs:
           bt="$ANDROID_HOME/build-tools/37.0.0"
           "$bt/zipalign" -P 16 -f 4 output/DeltaVPN-unsigned.apk "$tmp/aligned.apk" || fail "APK alignment failed."
           echo "APK_ALIGNED"
-          "$bt/apksigner" sign --ks "$tmp/delta.p12" --ks-type PKCS12 --ks-key-alias delta-release --ks-pass env:DELTA_KEYSTORE_PASSWORD --key-pass env:DELTA_KEYSTORE_PASSWORD --out output/DeltaVPN-1.7.3-arm64.apk "$tmp/aligned.apk" || fail "APK signing failed."
+          "$bt/apksigner" sign --ks "$tmp/delta.p12" --ks-type PKCS12 --ks-key-alias delta-release --ks-pass env:DELTA_KEYSTORE_PASSWORD --key-pass env:DELTA_KEYSTORE_PASSWORD --out output/DeltaVPN-1.7.4-arm64.apk "$tmp/aligned.apk" || fail "APK signing failed."
           unset DELTA_KEYSTORE_PASSWORD
           echo "APK_SIGNED"
-          "$bt/apksigner" verify --verbose --print-certs output/DeltaVPN-1.7.3-arm64.apk > "$tmp/cert.txt" || fail "APK signature verification failed."
+          "$bt/apksigner" verify --verbose --print-certs output/DeltaVPN-1.7.4-arm64.apk > "$tmp/cert.txt" || fail "APK signature verification failed."
           cat "$tmp/cert.txt"
           # Require exactly one verified signer; accept legacy and scheme-specific certificate labels.
           actual=$(python3 - "$tmp/cert.txt" <<'PY'
@@ -180,26 +180,26 @@ jobs:
           ) || fail "Unable to read exactly one verified signer."
           [[ "$actual" == "$expected" ]] || fail "Signed APK certificate differs from pinned certificate."
           echo "APK_CERTIFICATE_MATCH"
-          "$bt/zipalign" -c -P 16 4 output/DeltaVPN-1.7.3-arm64.apk || fail "Signed APK alignment verification failed."
+          "$bt/zipalign" -c -P 16 4 output/DeltaVPN-1.7.4-arm64.apk || fail "Signed APK alignment verification failed."
           echo "SIGNED_ALIGNMENT_OK"
-          "$bt/aapt" dump badging output/DeltaVPN-1.7.3-arm64.apk > "$tmp/badging.txt" || fail "Unable to inspect APK manifest."
+          "$bt/aapt" dump badging output/DeltaVPN-1.7.4-arm64.apk > "$tmp/badging.txt" || fail "Unable to inspect APK manifest."
           python3 - "$tmp/badging.txt" <<'PY'
           import re, sys
           line = next((s for s in open(sys.argv[1], encoding="utf-8") if s.startswith("package:")), "")
           attrs = dict(re.findall(r"(\w+)='([^']*)'", line))
-          if attrs.get("name") != "com.delta.vpn" or attrs.get("versionName") != "1.7.3":
+          if attrs.get("name") != "com.delta.vpn" or attrs.get("versionName") != "1.7.4" or attrs.get("versionCode") != "21":
               sys.exit("Unexpected APK package/version: " + repr({k: attrs.get(k) for k in ("name", "versionName")}))
           print("APK_PACKAGE_VERSION_OK")
           PY
           printf '%s\n' "$actual" > output/DeltaVPN-signing-cert.sha256
-          (cd output && sha256sum DeltaVPN-1.7.3-arm64.apk > DeltaVPN-1.7.3-arm64.apk.sha256)
+          (cd output && sha256sum DeltaVPN-1.7.4-arm64.apk > DeltaVPN-1.7.4-arm64.apk.sha256)
           echo "PERMANENT_SIGNATURE_VERIFIED"
       - name: Publish signed APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="v1.7.3-arm64-release-${GITHUB_RUN_NUMBER}"
-          gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Delta VPN 1.7.3 ARM64 (signed test)" --notes "Release-mode APK signed with the pinned Delta certificate. Physical-device testing remains required." --draft
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" output/DeltaVPN-1.7.3-arm64.apk output/DeltaVPN-1.7.3-arm64.apk.sha256 output/DeltaVPN-signing-cert.sha256 output/DeltaVPN-source.tar.gz
+          tag="v1.7.4-arm64-release-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Delta VPN 1.7.4 ARM64 (signed test)" --notes "Release-mode APK signed with the pinned Delta certificate. Physical-device testing remains required." --draft
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" output/DeltaVPN-1.7.4-arm64.apk output/DeltaVPN-1.7.4-arm64.apk.sha256 output/DeltaVPN-signing-cert.sha256 output/DeltaVPN-source.tar.gz
           gh release edit "$tag" -R "$GITHUB_REPOSITORY" --draft=false --prerelease
