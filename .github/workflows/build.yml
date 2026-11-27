@@ -187,9 +187,14 @@ jobs:
           import re, sys
           line = next((s for s in open(sys.argv[1], encoding="utf-8") if s.startswith("package:")), "")
           attrs = dict(re.findall(r"(\w+)='([^']*)'", line))
-          if attrs.get("name") != "com.delta.vpn" or attrs.get("versionName") != "1.7.4" or attrs.get("versionCode") != "21":
-              sys.exit("Unexpected APK package/version: " + repr({k: attrs.get(k) for k in ("name", "versionName")}))
-          print("APK_PACKAGE_VERSION_OK")
+          # F-Droid ARM64 applies upstream split override: 5_000_000 + 100 * base + 1.
+          # Keep this exact check; the previous 1.7.3 uses base 20 and this uses 21.
+          expected_code = str(5_000_000 + 100 * 21 + 1)
+          expected = {"name": "com.delta.vpn", "versionName": "1.7.4", "versionCode": expected_code}
+          observed = {k: attrs.get(k) for k in expected}
+          if observed != expected:
+              sys.exit("Unexpected APK package/version: " + repr(observed) + "; expected " + repr(expected))
+          print("APK_PACKAGE_VERSION_OK versionCode=" + expected_code)
           PY
           printf '%s\n' "$actual" > output/DeltaVPN-signing-cert.sha256
           (cd output && sha256sum DeltaVPN-1.7.4-arm64.apk > DeltaVPN-1.7.4-arm64.apk.sha256)
