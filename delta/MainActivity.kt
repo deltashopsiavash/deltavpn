@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.app.AlertDialog
 import android.app.Dialog
 import android.graphics.drawable.ColorDrawable
+import com.v2ray.ang.delta.DeltaAppUpdate
 import com.v2ray.ang.delta.DeltaNewsItem
 import com.v2ray.ang.delta.DeltaNewsFeed
 import android.animation.ValueAnimator
@@ -209,6 +210,11 @@ class MainActivity : ComponentActivity() {
     private val navy = Color.parseColor("#0D1524")
     private lateinit var importButton: Button
     private lateinit var refreshButton: Button
+    private lateinit var appUpdateButton: Button
+    private var appUpdate: DeltaAppUpdate? = null
+    private var appUpdateLoading = false
+    private var appUpdateLastPoll = -60000L
+    private fun installedVersion():String = runCatching{packageManager.getPackageInfo(packageName,0).versionName.orEmpty()}.getOrDefault("")
     private lateinit var clearButton: Button
     private lateinit var input: EditText
     private lateinit var servers: LinearLayout
@@ -447,7 +453,7 @@ class MainActivity : ComponentActivity() {
         servers=column();put(serverSection,servers,8)
         put(dashboard,serverSection)
         dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
-        put(dashboard, centered("v1.7.5",11,muted),16)
+        put(dashboard, centered("v"+installedVersion(),11,muted),16)
 
         drawer=FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt());visibility=View.GONE;setOnClickListener{hideDrawer()} }
         val drawerScroll=ScrollView(this).apply { isFillViewport=true;setBackgroundColor(navy);isClickable=true }
@@ -462,11 +468,13 @@ class MainActivity : ComponentActivity() {
         put(menu,button(tr("تغییر زبان","Change language"),panel){chooseLanguage()},18)
         put(menu,button(tr("پشتیبانی","Support"),panel){openContact("support")},10)
         put(menu,button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},10)
-        refreshButton=button(tr("به‌روزرسانی","Refresh"),panel){validateAccount(false)}
+        refreshButton=button(tr("به‌روزرسانی اطلاعات اشتراک","Refresh subscription"),panel){validateAccount(false)}
         put(menu,refreshButton,10)
+        appUpdateButton=button(tr("⬇ دریافت نسخه جدید برنامه","⬇ Download app update"),blue){openAppUpdate()}.apply{visibility=View.GONE}
+        put(menu,appUpdateButton,10)
         clearButton=button(tr("خروج از حساب","Sign out"),Color.parseColor("#A52F42")){requestSignOut()}
         put(menu,clearButton,10)
-        put(menu,centered("v1.7.5",11,muted),16)
+        put(menu,centered("v"+installedVersion(),11,muted),16)
         shell.addView(drawer,FrameLayout.LayoutParams(-1,-1))
         deviceScreen=FrameLayout(this).apply{setBackgroundColor(navy);visibility=View.GONE;isClickable=true}
         val deviceScroll=ScrollView(this).apply{isFillViewport=true}
@@ -501,11 +509,46 @@ class MainActivity : ComponentActivity() {
     override fun onPause() { newsForeground=false;clearTraffic();motion.active=false;super.onPause() }
     private fun showDrawer() {
         drawer.visibility=View.VISIBLE
+        refreshAppUpdate(true)
         val child=drawer.getChildAt(0)
         child.translationX=if(english)-child.width.toFloat() else child.width.toFloat()
         child.animate().translationX(0f).setDuration(220).start()
     }
     private fun hideDrawer(){drawer.visibility=View.GONE;if(::deviceScreen.isInitialized)closeDevices()}
+    private fun renderAppUpdate(){
+        if(!::appUpdateButton.isInitialized)return
+        val u=appUpdate
+        appUpdateButton.visibility=if(u!=null&&account!=null)View.VISIBLE else View.GONE
+        appUpdateButton.isEnabled=!appUpdateLoading
+        if(u!=null)appUpdateButton.text=tr("⬇ دانلود نسخه جدید "+u.version,"⬇ Download version "+u.version)
+    }
+    private fun refreshAppUpdate(force:Boolean=false,open:Boolean=false){
+        if(!::appUpdateButton.isInitialized||appUpdateLoading||!newsForeground||account==null)return
+        val now=SystemClock.elapsedRealtime()
+        if(!force&&now-appUpdateLastPoll<60000L)return
+        // Prevent duplicate polling and discard a failed/disabled response.
+        appUpdateLoading=true;appUpdateLastPoll=now;renderAppUpdate()
+        val token=account?.token
+        val installed=installedVersion()
+        lifecycleScope.launch {
+            val result=withContext(Dispatchers.IO){runCatching{accountApi.availableUpdate(installed)}}
+            appUpdateLoading=false
+            appUpdate=if(account?.token==token)result.getOrNull() else null
+            renderAppUpdate()
+            if(open&&newsForeground&&account?.token==token){
+                val u=appUpdate
+                if(u==null){Toast.makeText(this@MainActivity,tr("نسخه جدید در دسترس نیست یا بررسی ناموفق بود.","No update available or check failed."),Toast.LENGTH_LONG).show();return@launch}
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle(tr("نسخه جدید "+u.version,"New version "+u.version))
+                    .setMessage(tr("فایل رسمی در مرورگر دانلود می‌شود. پس از دانلود، نصب را تأیید کنید؛ نسخه قبلی را حذف نکنید.","Download the official APK in your browser, then confirm installation. Do not uninstall the existing app."))
+                    .setPositiveButton(tr("دانلود","Download")){_,_->
+                        if(appUpdate==u&&account?.token==token)runCatching{startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(u.url)))}
+                            .onFailure{Toast.makeText(this@MainActivity,tr("باز کردن لینک ناموفق بود.","Could not open download."),Toast.LENGTH_LONG).show()}
+                    }.setNegativeButton(tr("بعداً","Later"),null).show()
+            }
+        }
+    }
+    private fun openAppUpdate(){refreshAppUpdate(true,true)}
     private fun chooseLanguage() {
         if(busy||transitioning||pingRequest!=null){Toast.makeText(this,tr("ابتدا عملیات فعلی را تمام کنید.","Finish the current operation first."),Toast.LENGTH_SHORT).show();return}
         AlertDialog.Builder(this).setTitle(tr("انتخاب زبان","Choose language"))
@@ -654,6 +697,8 @@ class MainActivity : ComponentActivity() {
         quickButton.isEnabled=editable && account?.canConnect==true && repo.servers.isNotEmpty()
         accountName.text=tr("نام کاربری: ","Username: ")+(account?.username?:"—")
         syncNewsIdentity()
+        if(account==null)appUpdate=null
+        renderAppUpdate()
         loginSpinner.visibility=if(manualLogin)View.VISIBLE else View.GONE
         importButton.text=if(manualLogin)"" else tr("ورود به حساب","Sign in")
         if(manualLogin){importButton.animate().scaleX(0.97f).scaleY(0.97f).setDuration(160).start()}
@@ -907,6 +952,7 @@ class MainActivity : ComponentActivity() {
             if (a != null && a.remainingSeconds() == 0L && (running || transitioning)) LauncherManager.stopService(this@MainActivity)
             val now = android.os.SystemClock.elapsedRealtime()
             if(newsForeground&&account!=null&&now-newsLastPoll>=30000L)refreshNews()
+            if(newsForeground&&account!=null&&drawer.visibility==View.VISIBLE)refreshAppUpdate()
             if (ready && stateKnown && account != null && !busy && !transitioning && pingRequest==null && now-lastPoll>=30000L) {
                 lastPoll=now
                 pollUsage()

@@ -17,6 +17,7 @@ data class DeltaAccount(val token: String, val username: String, val configs: Li
 }
 data class DeltaNewsItem(val id: Long, val body: String, val url: String, val buttonLabel: String, val created: Long, val read: Boolean)
 data class DeltaNewsFeed(val unread: Int, val news: List<DeltaNewsItem>, val nextBefore: Long, val floating: DeltaNewsItem?)
+data class DeltaAppUpdate(val version:String,val url:String)
 class DeltaApiException(val status: Int, val reason: String = ""): Exception()
 
 class DeltaAccountApi {
@@ -47,6 +48,21 @@ class DeltaAccountApi {
         check(a.refreshMinutes in 1..1440 && a.refreshRevision>=0 && a.reconnectRevision in 0..a.refreshRevision && r.get("quota_enforced").asBoolean && kotlin.math.abs(a.limitBytes.toDouble()-a.gb*1073741824.0)<1.0 && a.usedBytes >= 0 && a.remainingBytes == (a.limitBytes-a.usedBytes).coerceAtLeast(0) && (!a.canConnect || (a.remainingBytes>0 && a.panelStatus=="active")) && a.token.matches(Regex("[a-f0-9]{64}")) && a.configs.size <= 1000 && a.gb > 0 &&
             a.expires-a.serverNow <= 3650L*86400L)
         return a
+    }
+    fun availableUpdate(installed:String): DeltaAppUpdate? {
+        val r=call(JsonObject().apply { addProperty("action","public_config") })
+        val u=r.get("app_update")?.takeIf{it.isJsonObject}?.asJsonObject ?: return null
+        if(u.get("enabled")?.asBoolean!=true)return null
+        val v=u.get("version")?.asString ?: return null
+        val url=u.get("url")?.asString ?: return null
+        val pattern=Regex("""(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})""")
+        if(!pattern.matches(v)||!pattern.matches(installed))return null
+        val current=installed.split('.').map{it.toInt()}
+        val latest=v.split('.').map{it.toInt()}
+        val changed=(0..2).firstOrNull{latest[it]!=current[it]} ?: return null
+        if(latest[changed]<current[changed])return null
+        if(url!="https://github.com/deltacoms/deltavpn/releases/download/v$v/DeltaVPN-$v-arm64.apk")return null
+        return DeltaAppUpdate(v,url)
     }
     fun contacts(): Map<String,String> {
         val r=call(JsonObject().apply { addProperty("action","public_config") })
