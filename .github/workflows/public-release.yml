@@ -82,9 +82,29 @@ jobs:
           [[ "$(sha256sum "$apk" | cut -d ' ' -f1)" == "$hash" ]]
           bt="$ANDROID_HOME/build-tools/37.0.0"
           "$bt/apksigner" verify --verbose --print-certs "$apk" > cert.txt
-          grep -Eiq "^Number of signers:[[:space:]]*1$" cert.txt
-          actual=$(grep -Ei '^Signer #1 certificate SHA-256 digest:' cert.txt | head -n1 | cut -d: -f2- | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
-          [[ "$actual" == "$expected" ]]
+          actual=$(python3 - "cert.txt" <<'PY'
+          import re, sys
+          data = open(sys.argv[1], encoding="utf-8").read()
+          counts = re.findall(r'(?im)^\s*Number of signers:\s*(\d+)\s*$', data)
+          if counts != ['1']:
+              sys.exit('Expected exactly one APK signer')
+          lines = [line for line in data.splitlines() if re.search(r'certificate\s+SHA-256\s+digest\s*:', line, re.I)]
+          digests = set()
+          for line in lines:
+              row = re.fullmatch(r'\s*(?:Signer\s+#1\s*:?|V[23](?:\.\d+)?\s+Signer(?:\s+#1)?\s*:)\s+certificate\s+SHA-256\s+digest\s*:\s*([0-9a-f:]+)\s*', line, re.I)
+              if not row:
+                  sys.exit('Unexpected APK signer certificate format')
+              digest = row[1].replace(':', '').lower()
+              if not re.fullmatch(r'[0-9a-f]{64}', digest):
+                  sys.exit('Invalid APK signer certificate digest')
+              digests.add(digest)
+          if len(digests) != 1:
+              sys.exit('Expected exactly one distinct APK signer certificate digest')
+          print(digests.pop())
+          PY
+          ) || { echo "Unable to read exactly one verified signer." >&2; exit 1; }
+          [[ "$actual" == "$expected" ]] || { echo "Signed APK certificate differs from pinned certificate." >&2; exit 1; }
+          echo "APK_CERTIFICATE_MATCH"
           "$bt/aapt" dump badging "$apk" > badging.txt
           grep -F "name='com.delta.vpn'" badging.txt | grep -F "versionName='$VERSION'" >/dev/null
           test -s DeltaVPN-source.tar.gz
