@@ -63,3 +63,7 @@ Device-bound app sessions and device list/revocation. Device IDs identify instal
 
 ## 1.6.1 preview
 Dedicated full-screen device management instead of list dialog. Network-level individual usage remains unavailable.
+
+
+## 1.7.6 — administrator-controlled updates
+The account drawer retains subscription refresh and adds an APK download button only if the mother bot enables a newer official stable release. The button opens the exact public GitHub APK in the browser, with explicit Android installation confirmation. No background install. Update policy is disabled by default and checked on drawer open and approximately every 60 seconds while visible. Verify on device before public distribution: disabled/equal/older versions remain hidden; a newer enabled version displays; disabling hides it; offline API failure hides it. Existing 1.7.5 installations must first install 1.7.6 manually. Keep the permanent signing certificate and package ID. The signed private prerelease is not the public stable release.
