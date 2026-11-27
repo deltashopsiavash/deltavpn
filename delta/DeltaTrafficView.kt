@@ -74,15 +74,18 @@ class DeltaTrafficView(context: Context, private val english: Boolean) : LinearL
         }
     }
 
+    // A member with a UI-specific name avoids the AndroidX LiveData lint
+    // detector mistaking a local function named setValue for LiveData.setValue.
+    private fun updateRateText(view: TextView, value: Long, label: String) {
+        val next = DeltaTraffic.format(value)
+        if (view.text.toString() != next) view.text = next
+        val desc = "$label: $next"
+        if (view.contentDescription != desc) view.contentDescription = desc
+    }
+
     fun show(download: Long, upload: Long) {
-        fun setValue(view: TextView, value: Long, label: String) {
-            val next = DeltaTraffic.format(value)
-            if (view.text.toString() != next) view.text = next
-            val desc = "$label: $next"
-            if (view.contentDescription != desc) view.contentDescription = desc
-        }
-        setValue(down, download, if (english) "Download speed" else "سرعت دانلود")
-        setValue(up, upload, if (english) "Upload speed" else "سرعت آپلود")
+        updateRateText(down, download, if (english) "Download speed" else "سرعت دانلود")
+        updateRateText(up, upload, if (english) "Upload speed" else "سرعت آپلود")
     }
 }
 
