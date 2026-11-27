@@ -94,7 +94,10 @@ class MainActivity : ComponentActivity() {
             trafficPanel.show(0L, 0L)
         }
     }
-    private lateinit var connect: ImageButton
+    private lateinit var connect: com.v2ray.ang.delta.DeltaPowerButton
+    private lateinit var connectionTimer: LinearLayout
+    private lateinit var connectionTimeText: TextView
+    private var connectedSince = 0L
     private lateinit var login: LinearLayout
     private lateinit var startup: LinearLayout
     private lateinit var startupStatus: TextView
@@ -203,7 +206,6 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    private var powerPulse: ValueAnimator?=null
     private var lastPoll = 0L
     private var usagePoll: Job? = null
     private val catalogLock = Any()
@@ -287,17 +289,21 @@ class MainActivity : ComponentActivity() {
                 }
                 AppConfig.MSG_STATE_RUNNING, AppConfig.MSG_STATE_START_SUCCESS -> {
                     if (!running || transitioning) clearTraffic()
+                    val now=SystemClock.elapsedRealtime()
+                    val serviceStart=intent.getStringExtra("content")?.toLongOrNull()
+                    if(serviceStart!=null && serviceStart in 1L..now)connectedSince=serviceStart
+                    else if(!running || connectedSince==0L)connectedSince=now
                     stateQueryGeneration++; stateKnown = true; running = true; transitioning = false; timer.removeCallbacks(timeout)
                     render(tr("اتصال برقرار است","Connected")); maybeRestore()
                 }
                 AppConfig.MSG_STATE_NOT_RUNNING, AppConfig.MSG_STATE_STOP_SUCCESS -> {
                     if(activeTunnelPing){pingRequest=null;activeTunnelPing=false;activePingGuid=null}
-                    stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
+                    connectedSince=0L; stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
                     if (logoutPending) { logoutPending=false; signOut() }
                     else { render(if (account == null) tr("نام کاربری و رمز عبور را وارد کنید.","Enter username and password.") else tr("قطع اتصال","Disconnect")); maybeRestore() }
                 }
                 AppConfig.MSG_STATE_START_FAILURE -> {
-                    stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
+                    connectedSince=0L; stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
                     render(tr("اتصال ناموفق بود؛ سرور دیگری را امتحان کنید.","Connection failed. Try another server.")); maybeRestore()
                 }
             }
@@ -448,18 +454,37 @@ class MainActivity : ComponentActivity() {
         dashboard.addView(trafficPanel, LinearLayout.LayoutParams(-1, dp(54)).apply {
             leftMargin = dp(17); rightMargin = dp(17); gravity = Gravity.CENTER_HORIZONTAL
         })
-        connect = ImageButton(this).apply {
-            setImageResource(com.v2ray.ang.R.drawable.delta_power)
-            scaleType = ImageView.ScaleType.CENTER
+        connect = com.v2ray.ang.delta.DeltaPowerButton(this).apply {
             isFocusable = true
             contentDescription = tr("اتصال یا قطع اتصال","Connect or disconnect")
             setPadding(0,0,0,0)
-            stateListAnimator = null; elevation = dp(3).toFloat()
+            stateListAnimator = null
             setOnClickListener { performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY); toggle() }
         }
-        put(dashboard, connect, 24, dp(158), dp(158), Gravity.CENTER_HORIZONTAL)
+        val powerSize=minOf(dp(238),(resources.displayMetrics.widthPixels*0.66f).toInt())
+        put(dashboard, connect, 8, powerSize, powerSize, Gravity.CENTER_HORIZONTAL)
         status = centered(tr("برای اتصال لمس کنید","Tap to connect"), 14, muted)
-        put(dashboard, status, 12)
+        put(dashboard, status, 0)
+        connectionTimer=column().apply {
+            gravity=Gravity.CENTER
+            background=GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.parseColor("#183859"),Color.parseColor("#09152D"),Color.parseColor("#102643"))).apply{
+                cornerRadius=dp(24).toFloat();setStroke(dp(1),Color.parseColor("#39DFFF"))
+            }
+            setPadding(dp(22),dp(7),dp(22),dp(7))
+            visibility=View.GONE
+            importantForAccessibility=View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+        put(connectionTimer,centered(tr("مدت اتصال","Connection duration"),12,Color.parseColor("#B6DEFF"),true))
+        connectionTimeText=centered("00:00:00",25,Color.parseColor("#C7F8FF"),true).apply{
+            typeface=Typeface.MONOSPACE
+            textDirection=View.TEXT_DIRECTION_LTR
+            setShadowLayer(dp(5).toFloat(),0f,0f,Color.parseColor("#15BFFF"))
+            includeFontPadding=false
+            accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_NONE
+        }
+        put(connectionTimer,connectionTimeText,2)
+        put(dashboard,connectionTimer,7,-2,-2,Gravity.CENTER_HORIZONTAL)
 
         serverPicker=button(tr("🌐 سرورهای قابل اتصال","🌐 Available servers")+"  ▾",panel) {
             val show=serverSection.visibility!=View.VISIBLE
@@ -467,7 +492,7 @@ class MainActivity : ComponentActivity() {
             serverPicker.text=tr("🌐 سرورهای قابل اتصال","🌐 Available servers")+if(show)"  ▴" else "  ▾"
             if(show){serverSection.alpha=0f;serverSection.translationY=-dp(8).toFloat();serverSection.animate().alpha(1f).translationY(0f).setDuration(220).start()}
         }
-        put(dashboard,serverPicker,30)
+        put(dashboard,serverPicker,20)
         serverSection=column().apply { visibility=View.GONE }
         quickButton=button(tr("⚡ اتصال سریع","⚡ Quick connect")){validateAccount(false,true)}
         pingButton=button(tr("📶 تست پینگ","📶 Ping"),panel){testServers()}.apply{textSize=12f;minWidth=0;setPadding(dp(6),0,dp(6),0)}
@@ -528,8 +553,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); clearTraffic(); newsForeground=true;motion.active=true;motion.invalidate(); if (ready) queryState(); refreshNews(true) }
-    override fun onPause() { newsForeground=false;clearTraffic();motion.active=false;super.onPause() }
+    override fun onResume() { super.onResume(); clearTraffic(); newsForeground=true;motion.active=true;motion.invalidate(); if(::connect.isInitialized)connect.setForegroundVisible(true); updateConnectionTimer(); if (ready) queryState(); refreshNews(true) }
+    override fun onPause() { newsForeground=false;clearTraffic();motion.active=false;if(::connect.isInitialized)connect.setForegroundVisible(false);super.onPause() }
     private fun showDrawer() {
         drawer.visibility=View.VISIBLE
         refreshAppUpdate(true)
@@ -603,7 +628,7 @@ class MainActivity : ComponentActivity() {
         }else signOut()
     }
     override fun onDestroy() {
-        cancelUsagePoll();newsForeground=false;clearNews();powerPulse?.cancel();powerPulse=null
+        cancelUsagePoll();newsForeground=false;clearNews();if(::connect.isInitialized)connect.setForegroundVisible(false)
         if (pingRequest != null && !activeTunnelPing) MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
         timer.removeCallbacksAndMessages(null)
         MessageHelper.sendMsg2Service(this, AppConfig.MSG_UNREGISTER_CLIENT, "")
@@ -618,6 +643,7 @@ class MainActivity : ComponentActivity() {
             if (!handled) {
                 stateKnown = true
                 running = false
+                connectedSince=0L
                 transitioning = false
                 timer.removeCallbacks(timeout)
                 render(if (busy) null else if (account == null) tr("نام کاربری و رمز عبور را وارد کنید.","Enter username and password.") else tr("برای اتصال لمس کنید","Tap to connect")); maybeRestore()
@@ -648,14 +674,6 @@ class MainActivity : ComponentActivity() {
         label(t,size,color,bold).apply { gravity = Gravity.CENTER }
     private fun put(parent: LinearLayout, view: View, top: Int = 0, width: Int = -1, height: Int = -2, alignment: Int = Gravity.NO_GRAVITY) {
         parent.addView(view, LinearLayout.LayoutParams(width,height).apply { topMargin = dp(top); gravity = alignment })
-    }
-    private fun powerBackground(active: Boolean) = GradientDrawable(
-        GradientDrawable.Orientation.TL_BR,
-        if (active) intArrayOf(Color.parseColor("#168861"),Color.parseColor("#115D49"))
-        else intArrayOf(Color.parseColor("#3478F6"),Color.parseColor("#1647B5"))
-    ).apply {
-        shape = GradientDrawable.OVAL
-        setStroke(dp(3), if (active) green else Color.parseColor("#5A9AFF"))
     }
     private fun gb(bytes: Long): String = String.format(Locale.US, "%.3f", bytes.coerceAtLeast(0) / 1073741824.0).trimEnd('0').trimEnd('.')
     private fun testServers(quick:Boolean=false) {
@@ -724,10 +742,8 @@ class MainActivity : ComponentActivity() {
         message?.let { status.text = it; loginStatus.text = it }
         if (!transitioning && message == null && pingRequest==null) status.text = if(running)tr("اتصال برقرار است","Connected") else tr("برای اتصال لمس کنید","Tap to connect")
         updateTraffic()
-        connect.background = powerBackground(running)
-        if(transitioning && powerPulse==null && (android.os.Build.VERSION.SDK_INT<26 || ValueAnimator.areAnimatorsEnabled())){
-            powerPulse=ValueAnimator.ofFloat(1f,0.94f,1f).apply{duration=1000;repeatCount=ValueAnimator.INFINITE;addUpdateListener{val v=it.animatedValue as Float;connect.scaleX=v;connect.scaleY=v};start()}
-        }else if(!transitioning){powerPulse?.cancel();powerPulse=null;connect.scaleX=1f;connect.scaleY=1f}
+        connect.setConnectionState(running,transitioning)
+        updateConnectionTimer()
         connect.contentDescription = if (running) tr("قطع اتصال","Disconnect") else tr("اتصال","Connect")
         connect.isEnabled = ready && stateKnown && !busy && !transitioning && (pingRequest == null || running) && (running || account?.canConnect == true || (account!=null && usageStale))
         connect.alpha = if (connect.isEnabled || (account!=null && (busy || transitioning || pingRequest!=null))) 1f else 0.55f
@@ -981,9 +997,19 @@ class MainActivity : ComponentActivity() {
         }
         expiry.setTextColor(if (a == null) muted else if (left == 0L) red else green)
     }
+    private fun updateConnectionTimer(){
+        if(!::connectionTimer.isInitialized)return
+        val show=running && connectedSince>0L
+        connectionTimer.visibility=if(show)View.VISIBLE else View.GONE
+        if(!show)return
+        val seconds=(SystemClock.elapsedRealtime()-connectedSince).coerceAtLeast(0L)/1000L
+        val value=String.format(Locale.US,"%02d:%02d:%02d",seconds/3600,(seconds/60)%60,seconds%60)
+        if(connectionTimeText.text.toString()!=value)connectionTimeText.text=value
+    }
     private val expiryTick = object : Runnable {
         override fun run() {
             if (isDestroyed) return
+            updateConnectionTimer()
             updateExpiry()
             updateUsage()
             updateTraffic()

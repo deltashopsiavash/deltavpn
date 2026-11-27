@@ -8,7 +8,7 @@ overlay = Path(__file__).resolve().parents[1] / "delta"
 app = root / "V2rayNG/app"
 src = app / "src/main/java/com/v2ray/ang"
 (src / "delta").mkdir(exist_ok=True)
-for name in ("SubscriptionPolicy.kt", "DeltaSubscriptions.kt", "DeltaAccountApi.kt", "DeltaSessionStore.kt", "DeltaRefreshCursor.kt", "DeltaTraffic.kt", "DeltaTrafficView.kt"):
+for name in ("SubscriptionPolicy.kt", "DeltaSubscriptions.kt", "DeltaAccountApi.kt", "DeltaSessionStore.kt", "DeltaRefreshCursor.kt", "DeltaTraffic.kt", "DeltaTrafficView.kt", "DeltaPowerButton.kt"):
     shutil.copy2(overlay / name, src / "delta" / name)
 shutil.copy2(overlay / "MainActivity.kt", src / "ui/main/MainActivity.kt")
 endpoint = os.environ.get("DELTA_APP_API_URL", "").strip() or "https://bot.deltajanebishop.ir/deltabotvps/delta_app_api.php"
@@ -230,6 +230,11 @@ probe = replace_exact(probe, "                } catch (_: Throwable) {\n        
 worker.write_text(probe)
 # Connected ping already uses the running core. Do not add a separate IP lookup.
 state_code = service_manager.read_text()
+# The daemon owns the actual connected time, independent of UI lifecycle.
+state_code = replace_exact(state_code, "    private var isReloading = false", "    private var isReloading = false\n    @Volatile private var deltaConnectedSince = 0L")
+state_code = replace_exact(state_code, '            MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_SUCCESS, "")', '            deltaConnectedSince = android.os.SystemClock.elapsedRealtime()\n            MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_SUCCESS, deltaConnectedSince.toString())')
+state_code = replace_exact(state_code, 'MessageHelper.sendMsg2UI(serviceControl.getService(), AppConfig.MSG_STATE_RUNNING, "")', 'MessageHelper.sendMsg2UI(serviceControl.getService(), AppConfig.MSG_STATE_RUNNING, deltaConnectedSince.toString())')
+state_code = replace_exact(state_code, "    fun stopCoreLoop(): Boolean {", "    fun stopCoreLoop(): Boolean {\n        deltaConnectedSince = 0L")
 state_code = replace_exact(state_code, "            val endpoint = if (time >= 0) SpeedtestManager.getRemoteIPInfo() else null\n", "")
 state_code = replace_exact(state_code, "                country = endpoint?.country,\n                ipAddress = endpoint?.ipAddress,\n", "")
 service_manager.write_text(state_code)
@@ -327,8 +332,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 27'),
-    ('versionName = "2.3.15"', 'versionName = "1.8.0"'),
+    ('versionCode = 755', 'versionCode = 28'),
+    ('versionName = "2.3.15"', 'versionName = "1.8.1"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old
