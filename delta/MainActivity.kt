@@ -109,9 +109,18 @@ class MainActivity : ComponentActivity() {
     private var newsForeground = false
 
     private var usageStale=false
+    private fun stableDeviceId():String? {
+        val raw=runCatching{android.provider.Settings.Secure.getString(contentResolver,android.provider.Settings.Secure.ANDROID_ID)}.getOrNull()
+            ?.trim()?.lowercase(Locale.US) ?: return null
+        if(!raw.matches(Regex("[0-9a-f]{1,16}"))||raw.all{it=='0'}||raw=="9774d56d682e549c")return null
+        val scoped="com.delta.vpn:device:v2:"+raw
+        return java.security.MessageDigest.getInstance("SHA-256").digest(scoped.toByteArray(Charsets.UTF_8)).joinToString(""){"%02x".format(Locale.US,it.toInt() and 255)}
+    }
+    private fun legacyDeviceId():String? = getSharedPreferences("delta_device",Context.MODE_PRIVATE).getString("id",null)?.takeIf{it.matches(Regex("[a-f0-9]{64}"))}
     private fun deviceId():String {
+        stableDeviceId()?.let{return it}
         val prefs=getSharedPreferences("delta_device",Context.MODE_PRIVATE)
-        return prefs.getString("id",null) ?: ByteArray(32).also{java.security.SecureRandom().nextBytes(it)}.joinToString(""){"%02x".format(it.toInt() and 255)}.also{check(prefs.edit().putString("id",it).commit())}
+        return legacyDeviceId() ?: ByteArray(32).also{java.security.SecureRandom().nextBytes(it)}.joinToString(""){"%02x".format(Locale.US,it.toInt() and 255)}.also{check(prefs.edit().putString("id",it).commit())}
     }
     private lateinit var deviceScreen:FrameLayout
     private lateinit var deviceList:LinearLayout
@@ -305,7 +314,7 @@ class MainActivity : ComponentActivity() {
         contacts.addView(button(tr("خرید اشتراک","Buy subscription"),panel){openContact("purchase")},LinearLayout.LayoutParams(0,dp(50),1f).apply { marginEnd=dp(8) })
         contacts.addView(button(tr("پشتیبانی","Support"),panel){openContact("support")},LinearLayout.LayoutParams(0,dp(50),1f))
         put(login,contacts,10)
-        put(login, centered("v1.7.1", 11, muted), 20)
+        put(login, centered("v1.7.2", 11, muted), 20)
 
         val menuButton=button("☰",panel){showDrawer()}
         menuButton.contentDescription=tr("منوی حساب","Account menu")
@@ -393,7 +402,7 @@ class MainActivity : ComponentActivity() {
         servers=column();put(serverSection,servers,8)
         put(dashboard,serverSection)
         dashboard.addView(View(this),LinearLayout.LayoutParams(1,0,1f))
-        put(dashboard, centered("v1.7.1",11,muted),16)
+        put(dashboard, centered("v1.7.2",11,muted),16)
 
         drawer=FrameLayout(this).apply { setBackgroundColor(0x99000000.toInt());visibility=View.GONE;setOnClickListener{hideDrawer()} }
         val drawerScroll=ScrollView(this).apply { isFillViewport=true;setBackgroundColor(navy);isClickable=true }
@@ -412,7 +421,7 @@ class MainActivity : ComponentActivity() {
         put(menu,refreshButton,10)
         clearButton=button(tr("خروج از حساب","Sign out"),Color.parseColor("#A52F42")){requestSignOut()}
         put(menu,clearButton,10)
-        put(menu,centered("v1.7.1",11,muted),16)
+        put(menu,centered("v1.7.2",11,muted),16)
         shell.addView(drawer,FrameLayout.LayoutParams(-1,-1))
         deviceScreen=FrameLayout(this).apply{setBackgroundColor(navy);visibility=View.GONE;isClickable=true}
         val deviceScroll=ScrollView(this).apply{isFillViewport=true}
@@ -872,7 +881,7 @@ class MainActivity : ComponentActivity() {
         val wasRunning = running
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
-                val a = accountApi.session(token)
+                val a = accountApi.session(token, stableDeviceId())
                 if (!wasRunning) checkedImport(a)
                 a
             } }
@@ -905,12 +914,19 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
                 repo.clear()
-                val a = accountApi.login(name, secret, deviceId(), (android.os.Build.MANUFACTURER+" "+android.os.Build.MODEL).take(25))
+                val a = accountApi.login(name, secret, deviceId(), (android.os.Build.MANUFACTURER+" "+android.os.Build.MODEL).take(25), legacyDeviceId())
                 try { checkedImport(a); sessionStore.save(a.token); a } catch (e: Exception) { repo.clear(); runCatching { accountApi.logout(a.token) }; throw e }
             } }
             busy = false;manualLogin=false
             result.onSuccess { account = it; delays.clear(); input.text.clear(); render(if (repo.servers.isEmpty()) tr("کانفیگ اختصاصی فعال در دسترس نیست.","No active dedicated server available.") else tr("به دلتا خوش آمدید","Welcome to Delta")) }
-                .onFailure { account = null; render(if(it is DeltaApiException && it.status==409)tr("ظرفیت دستگاه‌های اشتراک تکمیل شده است یا حساب آماده نیست.","Device limit reached or account unavailable.") else tr("ورود یا دریافت اشتراک ناموفق بود؛ حساب و تنظیمات سرور را بررسی کنید.","Sign-in or subscription loading failed. Check account and server settings.")) }
+                .onFailure { account = null; render(when {
+                    it is DeltaApiException && it.status==409 && it.reason=="device_limit" -> tr("ظرفیت دستگاه‌ها تکمیل است. از ربات دلتا، /buy ← سرویس‌های من ← دستگاه‌های متصل، فقط دستگاه قبلی را خارج کنید و دوباره وارد شوید.","Device limit reached. In the Delta bot, open /buy → My services → Devices, remove the old device, and sign in again.")
+                    it is DeltaApiException && it.status==409 && it.reason=="dedicated_required" -> tr("حساب هنوز آماده اتصال نیست؛ با پشتیبانی تماس بگیرید.","Account not ready; contact support.")
+                    it is DeltaApiException && it.status==409 -> tr("ظرفیت دستگاه‌ها تکمیل است یا حساب آماده نیست؛ دستگاه‌ها را از ربات بررسی کنید.","Device limit reached or account unavailable. Check devices in the bot.")
+                    it is DeltaApiException && it.status==401 -> tr("نام کاربری یا رمز عبور معتبر نیست یا حساب غیرفعال است.","Invalid credentials or inactive account.")
+                    it is DeltaApiException && it.status==429 -> tr("تعداد تلاش‌های ورود زیاد است؛ بعداً دوباره امتحان کنید.","Too many sign-in attempts; try again later.")
+                    else -> tr("ورود یا دریافت اشتراک ناموفق بود؛ حساب و تنظیمات سرور را بررسی کنید.","Sign-in or subscription loading failed. Check account and server settings.")
+                }) }
         }
     }
     private fun pollUsage() {
@@ -922,7 +938,7 @@ class MainActivity : ComponentActivity() {
             val result=withContext(Dispatchers.IO) { runCatching {
                 val current=accountApi.status(previous.token)
                 if(!wasRunning&&DeltaRefreshCursor(previous.token).due(current)&&current.canConnect){
-                    val updated=accountApi.session(previous.token);checkedImport(updated);updated
+                    val updated=accountApi.session(previous.token, stableDeviceId());checkedImport(updated);updated
                 }else current
             } }
             busy=false
@@ -949,7 +965,7 @@ class MainActivity : ComponentActivity() {
         busy = true; render(tr("در حال بررسی اعتبار حساب…","Checking subscription…"))
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
-                val updated = accountApi.session(previous.token)
+                val updated = accountApi.session(previous.token, stableDeviceId())
                 checkedImport(updated)
                 updated
             } }
