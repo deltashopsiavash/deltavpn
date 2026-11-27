@@ -55,6 +55,9 @@ import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.helper.MessageHelper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -201,6 +204,12 @@ class MainActivity : ComponentActivity() {
     }
     private var powerPulse: ValueAnimator?=null
     private var lastPoll = 0L
+    private var usagePoll: Job? = null
+    private val catalogLock = Any()
+    private fun cancelUsagePoll(){
+        usagePoll?.cancel(); usagePoll=null
+    }
+    private fun clearCatalog(){ synchronized(catalogLock){repo.clear()} }
     private lateinit var expiry: TextView
     private lateinit var usageBar: ProgressBar
     private lateinit var pingButton: Button
@@ -579,7 +588,7 @@ class MainActivity : ComponentActivity() {
         }else signOut()
     }
     override fun onDestroy() {
-        newsForeground=false;clearNews();powerPulse?.cancel();powerPulse=null
+        cancelUsagePoll();newsForeground=false;clearNews();powerPulse?.cancel();powerPulse=null
         if (pingRequest != null) MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
         timer.removeCallbacksAndMessages(null)
         MessageHelper.sendMsg2Service(this, AppConfig.MSG_UNREGISTER_CLIENT, "")
@@ -636,6 +645,7 @@ class MainActivity : ComponentActivity() {
     private fun gb(bytes: Long): String = String.format(Locale.US, "%.3f", bytes.coerceAtLeast(0) / 1073741824.0).trimEnd('0').trimEnd('.')
     private fun testServers(quick:Boolean=false) {
         if (pingRequest != null || busy || transitioning || running || repo.servers.isEmpty()) return
+        cancelUsagePoll()
         val id = java.util.UUID.randomUUID().toString()
         quickMode=quick
         pingRequest = id; delays.clear(); render(if(quick)tr("در حال یافتن سریع‌ترین سرور…","Finding the fastest server…") else tr("در حال تست واقعی سرورها…","Testing servers…"))
@@ -686,7 +696,7 @@ class MainActivity : ComponentActivity() {
         }else if(!transitioning){powerPulse?.cancel();powerPulse=null;connect.scaleX=1f;connect.scaleY=1f}
         connect.contentDescription = if (running) tr("قطع اتصال","Disconnect") else tr("اتصال","Connect")
         connect.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest == null && (running || account?.canConnect == true || (account!=null && usageStale))
-        connect.alpha = if (connect.isEnabled) 1f else 0.55f
+        connect.alpha = if (connect.isEnabled || (account!=null && (busy || transitioning || pingRequest!=null))) 1f else 0.55f
         status.setTextColor(if (running) green else muted)
         val editable = ready && stateKnown && !busy && !transitioning && !running && pingRequest == null
         val loginEditable = !busy && !running && !transitioning
@@ -949,7 +959,7 @@ class MainActivity : ComponentActivity() {
             if(newsForeground&&account!=null&&now-newsLastPoll>=30000L)refreshNews()
             if(newsForeground&&account!=null&&drawer.visibility==View.VISIBLE)refreshAppUpdate()
             if (restoreRetryAt>0L && now>=restoreRetryAt && newsForeground && !busy && ready && stateKnown && account==null) maybeRestore(true)
-            if (ready && stateKnown && account != null && !busy && !transitioning && pingRequest==null && now-lastPoll>=30000L) {
+            if (ready && stateKnown && account != null && !busy && !transitioning && pingRequest==null && usagePoll?.isActive!=true && now-lastPoll>=30000L) {
                 lastPoll=now
                 pollUsage()
             }
@@ -995,14 +1005,15 @@ class MainActivity : ComponentActivity() {
     private fun invalidateSession(){
         account?.let{DeltaRefreshCursor(it.token).clear()}
         account=null; sessionStore.clear(); catalogPending=false; restoreRetryAt=0L; usageStale=false
-        if(running) LauncherManager.stopService(this@MainActivity) else repo.clear()
+        cancelUsagePoll()
+        if(running) LauncherManager.stopService(this@MainActivity) else clearCatalog()
         delays.clear()
         render(tr("نشست لغو شده یا منقضی شده است؛ دوباره وارد شوید.","Session revoked or expired. Sign in again."))
     }
-    private fun tryImport(a: DeltaAccount):Boolean {
+    private fun tryImport(a: DeltaAccount):Boolean = synchronized(catalogLock) {
         // Do not replace a previously good catalog with a partial/empty active response.
-        if(a.canConnect && (!a.configsReady || a.configs.isEmpty()))return false
-        return runCatching {
+        if(a.canConnect && (!a.configsReady || a.configs.isEmpty()))return@synchronized false
+        runCatching {
             repo.refresh(if (a.canConnect) a.configs else emptyList())
             DeltaRefreshCursor(a.token).applied(a,true)
             true
@@ -1020,7 +1031,7 @@ class MainActivity : ComponentActivity() {
         manualLogin=true;busy = true; render(tr("در حال ورود…","Signing in…"))
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
-                repo.clear()
+                clearCatalog()
                 val a = accountApi.login(name, secret, deviceId(), (android.os.Build.MANUFACTURER+" "+android.os.Build.MODEL).take(25), legacyDeviceId())
                 try { sessionStore.save(a.token) } catch (e: Exception) { runCatching { accountApi.logout(a.token) }; throw e }
                 a to tryImport(a)
@@ -1042,21 +1053,32 @@ class MainActivity : ComponentActivity() {
     }
     private fun pollUsage() {
         val previous=account ?: return
-        if (busy || transitioning || pingRequest!=null) return
+        if (busy || transitioning || pingRequest!=null || usagePoll?.isActive==true) return
         val wasRunning=running
-        busy=true
-        lifecycleScope.launch {
+        val needsCatalog=catalogPending || !previous.canConnect || repo.servers.isEmpty()
+        // Background I/O does not own the foreground busy flag.
+        usagePoll=lifecycleScope.launch {
             val result=withContext(Dispatchers.IO) { runCatching {
                 val current=accountApi.status(previous.token)
-                if(!wasRunning&&current.canConnect&&(catalogPending || !previous.canConnect || repo.servers.isEmpty() || DeltaRefreshCursor(previous.token).due(current))){
+                currentCoroutineContext().ensureActive()
+                if(!wasRunning&&current.canConnect&&(needsCatalog || DeltaRefreshCursor(previous.token).due(current))){
                     val loaded=runCatching { accountApi.session(previous.token, stableDeviceId()) }
                     val failure=loaded.exceptionOrNull()
                     if(failure is DeltaApiException && failure.sessionRevoked)throw failure
+                    currentCoroutineContext().ensureActive()
                     val updated=loaded.getOrNull()
-                    if(updated==null) current to false else updated to tryImport(updated)
+                    if(updated==null) current to false else {
+                        val job=currentCoroutineContext()[Job]
+                        val imported=synchronized(catalogLock){
+                            job?.ensureActive()
+                            tryImport(updated)
+                        }
+                        updated to imported
+                    }
                 }else current to null
             } }
-            busy=false
+            currentCoroutineContext().ensureActive()
+            if(account?.token!=previous.token || busy || transitioning || running!=wasRunning || pingRequest!=null)return@launch
             result.onSuccess { (updated, imported) ->
                 account=updated;usageStale=false
                 if(imported!=null)catalogPending=!imported
@@ -1072,6 +1094,7 @@ class MainActivity : ComponentActivity() {
         val previous = account ?: return
         if (busy || transitioning || pingRequest != null) return
         if (running) { if (!connectAfter && !quickAfter) pollUsage(); return }
+        cancelUsagePoll()
         busy = true; render(tr("در حال بررسی اعتبار حساب…","Checking subscription…"))
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
@@ -1097,13 +1120,16 @@ class MainActivity : ComponentActivity() {
     }
     private fun signOut() {
         if (busy || running || transitioning || pingRequest != null) return
+        cancelUsagePoll()
         val previous = account
         previous?.let{DeltaRefreshCursor(it.token).clear()}
-        account = null; sessionStore.clear(); catalogPending=false; restoreRetryAt=0L; usageStale=false; repo.clear(); delays.clear(); input.text.clear(); password.text.clear();hideDrawer();serverSection.visibility=View.GONE
+        account = null; sessionStore.clear(); catalogPending=false; restoreRetryAt=0L; usageStale=false; clearCatalog(); delays.clear(); input.text.clear(); password.text.clear();hideDrawer();serverSection.visibility=View.GONE
         render(tr("از حساب خارج شدید.","Signed out."))
         if (previous != null) lifecycleScope.launch(Dispatchers.IO) { runCatching { accountApi.logout(previous.token) } }
     }
     private fun toggle() {
+        if (busy || transitioning || pingRequest!=null) return
+        cancelUsagePoll()
         if (running) {
             transitioning = true; render(tr("در حال قطع اتصال…","Disconnecting…"))
             LauncherManager.stopService(this); timer.postDelayed(timeout, 15000)
@@ -1113,6 +1139,7 @@ class MainActivity : ComponentActivity() {
     }
     private fun startTunnel() {
         if (account?.canConnect != true || (account?.remainingSeconds() ?: 0) <= 0 || !repo.canConnect()) return
+        cancelUsagePoll()
         MmkvManager.encodeSettings(AppConfig.PREF_MODE, AppConfig.VPN)
         transitioning = true; render(tr("در حال برقراری اتصال…","Connecting…"))
         if (!LauncherManager.startServiceFromToggle(this, account?.deadlineElapsed ?: 0L, account?.token.orEmpty())) {
