@@ -109,7 +109,6 @@ class MainActivity : ComponentActivity() {
     private var failure=""
     private lateinit var statePill:TextView
     private lateinit var steps:TextView
-    private lateinit var actionButton:Button
     private fun attempting()=phase==Phase.SWITCH||phase==Phase.VERIFY||phase==Phase.QUICK||phase==Phase.START
     private lateinit var login: LinearLayout
     private lateinit var startup: LinearLayout
@@ -511,8 +510,6 @@ class MainActivity : ComponentActivity() {
         put(dashboard,connectionTimer,7,-2,-2,Gravity.CENTER_HORIZONTAL)
         steps=centered("",12,muted,true).apply{setPadding(dp(10),dp(8),dp(10),dp(8));background=shape(panel,18)}
         put(dashboard,steps,8)
-        actionButton=button(tr("لغو ×","Cancel ×"),panel){toggle()}.apply{visibility=View.GONE}
-        put(dashboard,actionButton,7)
 
         serverPicker=button(tr("🌐 سرورهای قابل اتصال","🌐 Available servers")+"  ▾",panel) {
             val show=serverSection.visibility!=View.VISIBLE
@@ -778,15 +775,17 @@ class MainActivity : ComponentActivity() {
         if(failed)status.text=failure
         steps.visibility=if(pending||running)View.VISIBLE else View.GONE
         steps.text=when{running->tr("✓ تأیید اعتبار   ›   ✓ اتصال به دلتا","✓ Verified   ›   ✓ Connected");phase==Phase.SWITCH->tr("◌ مجوز و تعویض VPN   ›   تأیید اعتبار","◌ VPN permission   ›   Verify");phase==Phase.VERIFY->tr("◌ تأیید اعتبار   ›   اتصال به دلتا","◌ Verify   ›   Connect");else->tr("✓ تأیید اعتبار   ›   ◌ اتصال به دلتا","✓ Verified   ›   ◌ Connect")}
-        actionButton.visibility=if(pending||running||failed)View.VISIBLE else View.GONE
-        actionButton.text=when{pending->tr("× لغو","× Cancel");running->tr("قطع اتصال","Disconnect");else->tr("↻ تلاش مجدد","↻ Retry")}
-        actionButton.background=shape(panel,24,accent)
         updateTraffic()
         connect.setConnectionState(running,pending||transitioning,failed,phase==Phase.VERIFY)
         updateConnectionTimer()
-        connect.contentDescription=if(pending||running||failed)actionButton.text else tr("اتصال","Connect")
+        // The central power control is the sole connect/cancel/disconnect/retry action.
+        connect.contentDescription=when{
+            pending->tr("لغو درخواست اتصال","Cancel connection request")
+            running->tr("قطع اتصال","Disconnect")
+            failed->tr("تلاش مجدد","Retry connection")
+            else->tr("اتصال","Connect")
+        }
         connect.isEnabled=pending||(ready&&stateKnown&&!permissionPending&&!drain&&!busy&&!transitioning&&(pingRequest==null||running)&&(running||account?.canConnect==true||(account!=null&&usageStale)))
-        actionButton.isEnabled=connect.isEnabled
         connect.alpha=if(connect.isEnabled||(account!=null&&(busy||transitioning||pingRequest!=null)))1f else 0.55f
         status.setTextColor(if(failed)red else if(running)green else muted)
         val editable=ready&&stateKnown&&!permissionPending&&!drain&&!pending&&!busy&&!transitioning&&!running&&pingRequest==null
