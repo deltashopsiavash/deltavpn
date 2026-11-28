@@ -22,11 +22,13 @@ class DeltaPowerButton(context: Context): ImageButton(context) {
     private val rect=RectF()
     private var connected=false
     private var changing=false
+    private var failed=false
+    private var verifying=false
     private var foreground=false
     private var animationStart=0L
     private val center=120f
     private val radius=76f
-    private val cyan=Color.rgb(65,224,255)
+    private val cyan:Int get()=when{connected->Color.rgb(54,255,145);failed->Color.rgb(255,65,95);else->Color.rgb(65,224,255)}
     private val white=Color.rgb(235,250,255)
     private val halo=RadialGradient(120f,120f,118f,
         intArrayOf(0x003A8DFF,0x123A8DFF,0x503378FF,0x142A77FF,0x002A77FF),
@@ -38,13 +40,23 @@ class DeltaPowerButton(context: Context): ImageButton(context) {
         intArrayOf(0xFF3478F6.toInt(),0xFF1647B5.toInt(),0xFF12337D.toInt()),null,Shader.TileMode.CLAMP)
     private val rim=LinearGradient(42f,45f,195f,195f,
         intArrayOf(0xFFE2FFFF.toInt(),0xFF21D5FF.toInt(),0xFF1260DC.toInt(),0xFF64F0FF.toInt()),null,Shader.TileMode.CLAMP)
+    private fun fill(colors:IntArray)=RadialGradient(101f,82f,113f,colors,floatArrayOf(0f,.34f,.72f,1f),Shader.TileMode.CLAMP)
+    private val greenFill=fill(intArrayOf(0xFFB0FFCB.toInt(),0xFF19D66C.toInt(),0xFF00873B.toInt(),0xFF014A28.toInt()))
+    private val redFill=fill(intArrayOf(0xFFFFA0AD.toInt(),0xFFFF284F.toInt(),0xFFBA082C.toInt(),0xFF61051D.toInt()))
+    private fun ring(color:Int)=LinearGradient(42f,45f,195f,195f,intArrayOf(Color.WHITE,color,alpha(color,150),color),null,Shader.TileMode.CLAMP)
+    private val greenRim=ring(Color.rgb(54,255,145))
+    private val redRim=ring(Color.rgb(255,65,95))
+    private fun glow(color:Int)=RadialGradient(120f,120f,118f,intArrayOf(alpha(color,0),alpha(color,18),alpha(color,80),alpha(color,20),alpha(color,0)),floatArrayOf(0f,.48f,.66f,.85f,1f),Shader.TileMode.CLAMP)
+    private val greenHalo=glow(Color.rgb(54,255,145))
+    private val redHalo=glow(Color.rgb(255,65,95))
+    private val shield=android.graphics.Path().apply{moveTo(120f,88f);lineTo(151f,101f);lineTo(150f,120f);quadTo(148f,143f,120f,155f);quadTo(92f,143f,90f,120f);lineTo(89f,101f);close()}
     private val gloss=LinearGradient(120f,44f,120f,122f,
         intArrayOf(0x65FFFFFF,0x0AFFFFFF,0x00FFFFFF),null,Shader.TileMode.CLAMP)
     init { background=null; isClickable=true }
     fun setForegroundVisible(value:Boolean){ foreground=value;invalidate() }
-    fun setConnectionState(active:Boolean,transition:Boolean){
-        if(connected!=active || changing!=transition){
-            connected=active;changing=transition;animationStart=SystemClock.elapsedRealtime();invalidate()
+    fun setConnectionState(active:Boolean,transition:Boolean,error:Boolean=false,verify:Boolean=false){
+        if(connected!=active||changing!=transition||failed!=error||verifying!=verify){
+            connected=active;changing=transition;failed=error;verifying=verify;animationStart=SystemClock.elapsedRealtime();invalidate()
         }
     }
     private fun motionEnabled()=foreground && isShown && (Build.VERSION.SDK_INT<26 || ValueAnimator.areAnimatorsEnabled())
@@ -75,8 +87,8 @@ class DeltaPowerButton(context: Context): ImageButton(context) {
         val phase=(elapsed%3600L)/3600f
         c.save()
         c.translate((width-size)/2f,(height-size)/2f);c.scale(size/240f,size/240f)
-        if(connected || changing){
-            paint.style=Paint.Style.FILL;paint.color=Color.WHITE;paint.shader=halo
+        if(connected || changing || failed){
+            paint.style=Paint.Style.FILL;paint.color=Color.WHITE;paint.shader=when{connected->greenHalo;failed->redHalo;else->halo}
             c.drawCircle(center,center,118f,paint);paint.shader=null
             for(i in 0..2){
                 val wave=(phase+i/3f)%1f
@@ -93,12 +105,12 @@ class DeltaPowerButton(context: Context): ImageButton(context) {
             circle(c,79f,alpha(cyan,45),9f)
         }
         circle(c,radius+2f,0xFF0A214B.toInt())
-        paint.color=Color.WHITE;paint.style=Paint.Style.FILL;paint.shader=if(connected)activeFill else idleFill
+        paint.color=Color.WHITE;paint.style=Paint.Style.FILL;paint.shader=when{connected->greenFill;failed->redFill;changing->activeFill;else->idleFill}
         c.drawCircle(center,center,radius,paint)
         paint.shader=gloss
         c.drawOval(50f,48f,190f,119f,paint)
-        paint.shader=if(connected)rim else null;paint.color=if(connected)Color.WHITE else 0xFF588AE2.toInt()
-        paint.style=Paint.Style.STROKE;paint.strokeWidth=if(connected)3.7f else 1.8f
+        paint.shader=when{connected->greenRim;failed->redRim;changing->rim;else->null};paint.color=if(connected||changing||failed)Color.WHITE else 0xFF588AE2.toInt()
+        paint.style=Paint.Style.STROKE;paint.strokeWidth=if(connected||changing||failed)3.7f else 1.8f
         c.drawCircle(center,center,radius-1.7f,paint)
         paint.shader=null
         if(connected){
@@ -106,9 +118,14 @@ class DeltaPowerButton(context: Context): ImageButton(context) {
             arc(c,31f,-47f,274f,alpha(cyan,45),13f)
         }
         // Upright power glyph: open arc and center bar.
-        arc(c,25f,-50f,280f,white,6f)
-        paint.color=white;paint.strokeWidth=6f;paint.strokeCap=Paint.Cap.ROUND
-        c.drawLine(center,center-37f,center,center-10f,paint)
+        if(verifying){
+            paint.shader=null;paint.color=white;paint.style=Paint.Style.STROKE;paint.strokeWidth=5f;paint.strokeJoin=Paint.Join.ROUND
+            c.drawPath(shield,paint);c.drawLine(106f,120f,117f,132f,paint);c.drawLine(117f,132f,137f,110f,paint)
+        }else{
+            arc(c,25f,-50f,280f,white,6f)
+            paint.color=white;paint.strokeWidth=6f;paint.strokeCap=Paint.Cap.ROUND
+            c.drawLine(center,center-37f,center,center-10f,paint)
+        }
         if(isPressed)circle(c,radius,0x18FFFFFF)
         c.restore()
         if(moving)postInvalidateDelayed(33L)

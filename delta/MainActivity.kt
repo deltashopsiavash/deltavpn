@@ -98,6 +98,19 @@ class MainActivity : ComponentActivity() {
     private lateinit var connectionTimer: LinearLayout
     private lateinit var connectionTimeText: TextView
     private var connectedSince = 0L
+    private enum class Phase { IDLE, SWITCH, VERIFY, QUICK, START, FAILED }
+    private var phase=Phase.IDLE
+    private var attemptId=0L
+    private var attemptJob:Job?=null
+    private var attemptApi:DeltaAccountApi?=null
+    private var permissionPending=false
+    private var wantQuick=false
+    private var drain=false
+    private var failure=""
+    private lateinit var statePill:TextView
+    private lateinit var steps:TextView
+    private lateinit var actionButton:Button
+    private fun attempting()=phase==Phase.SWITCH||phase==Phase.VERIFY||phase==Phase.QUICK||phase==Phase.START
     private lateinit var login: LinearLayout
     private lateinit var startup: LinearLayout
     private lateinit var startupStatus: TextView
@@ -243,9 +256,8 @@ class MainActivity : ComponentActivity() {
     private val muted = Color.parseColor("#A6B6D0")
     private val panel = Color.parseColor("#17263D")
     private val timeout = Runnable {
-        transitioning = false;logoutPending=false
-        render(tr("پاسخ سرویس دریافت نشد؛ وضعیت اتصال را بررسی کنید.","VPN service did not respond. Check connection."))
-        queryState()
+        if(attempting())endAttempt(true,tr("مهلت اتصال پایان یافت.","Connection timed out."))
+        else { transitioning=false;logoutPending=false;render(tr("پاسخ سرویس دریافت نشد.","VPN service did not respond."));queryState() }
     }
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -283,11 +295,15 @@ class MainActivity : ComponentActivity() {
                         pingRequest = null
                         if (quickMode && complete) finishQuick() else {
                             quickMode = false
+                            if(phase==Phase.QUICK){endAttempt(true,tr("تست سرورها ناموفق بود.","Server test failed."));return}
                             render(if (complete && delays.values.any{it>0}) tr("تست سرورها پایان یافت.","Server test finished.") else if(complete) tr("هیچ سروری به تست پینگ پاسخ نداد.","No server responded to the ping test.") else tr("تست لغو شد.","Test cancelled."))
                         }
                     }
                 }
                 AppConfig.MSG_STATE_RUNNING, AppConfig.MSG_STATE_START_SUCCESS -> {
+                    if(drain){stopPendingService();return}
+                    if(attempting()&&phase!=Phase.START)return
+                    phase=Phase.IDLE;failure=""
                     if (!running || transitioning) clearTraffic()
                     val now=SystemClock.elapsedRealtime()
                     val serviceStart=intent.getStringExtra("content")?.toLongOrNull()
@@ -297,6 +313,8 @@ class MainActivity : ComponentActivity() {
                     render(tr("اتصال برقرار است","Connected")); maybeRestore()
                 }
                 AppConfig.MSG_STATE_NOT_RUNNING, AppConfig.MSG_STATE_STOP_SUCCESS -> {
+                    if(attempting()&&phase!=Phase.START)return
+                    if(phase==Phase.START){endAttempt(true,tr("سرویس اتصال متوقف شد.","VPN service stopped."));return}
                     if(activeTunnelPing){pingRequest=null;activeTunnelPing=false;activePingGuid=null}
                     connectedSince=0L; stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
                     if (logoutPending) { logoutPending=false; signOut() }
@@ -304,13 +322,17 @@ class MainActivity : ComponentActivity() {
                 }
                 AppConfig.MSG_STATE_START_FAILURE -> {
                     connectedSince=0L; stateQueryGeneration++; stateKnown = true; running = false; transitioning = false; timer.removeCallbacks(timeout)
-                    render(tr("اتصال ناموفق بود؛ سرور دیگری را امتحان کنید.","Connection failed. Try another server.")); maybeRestore()
+                    if(!drain)endAttempt(true,tr("اتصال ناموفق بود؛ سرور دیگری را امتحان کنید.","Connection failed. Try another server.")); maybeRestore()
                 }
             }
         }
     }
     private val permission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (it.resultCode == RESULT_OK) startTunnel() else render(tr("مجوز VPN داده نشد.","VPN permission was denied."))
+        permissionPending=false
+        if(phase==Phase.SWITCH){
+            if(it.resultCode==RESULT_OK)verifyAttempt(attemptId)
+            else endAttempt(true,tr("مجوز VPN داده نشد؛ تنظیمات VPN دائمی را بررسی کنید.","VPN permission denied; check always-on VPN settings."))
+        }else render()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -464,7 +486,9 @@ class MainActivity : ComponentActivity() {
         val powerSize=minOf(dp(238),(resources.displayMetrics.widthPixels*0.66f).toInt())
         put(dashboard, connect, 8, powerSize, powerSize, Gravity.CENTER_HORIZONTAL)
         status = centered(tr("برای اتصال لمس کنید","Tap to connect"), 14, muted)
-        put(dashboard, status, 0)
+        statePill=centered("",18,fg,true).apply{setPadding(dp(18),dp(8),dp(18),dp(8))}
+        put(dashboard,statePill,0,-2,-2,Gravity.CENTER_HORIZONTAL)
+        put(dashboard,status,5)
         connectionTimer=column().apply {
             gravity=Gravity.CENTER
             background=GradientDrawable(GradientDrawable.Orientation.TL_BR,
@@ -485,6 +509,10 @@ class MainActivity : ComponentActivity() {
         }
         put(connectionTimer,connectionTimeText,2)
         put(dashboard,connectionTimer,7,-2,-2,Gravity.CENTER_HORIZONTAL)
+        steps=centered("",12,muted,true).apply{setPadding(dp(10),dp(8),dp(10),dp(8));background=shape(panel,18)}
+        put(dashboard,steps,8)
+        actionButton=button(tr("لغو ×","Cancel ×"),panel){toggle()}.apply{visibility=View.GONE}
+        put(dashboard,actionButton,7)
 
         serverPicker=button(tr("🌐 سرورهای قابل اتصال","🌐 Available servers")+"  ▾",panel) {
             val show=serverSection.visibility!=View.VISIBLE
@@ -553,7 +581,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onResume() { super.onResume(); clearTraffic(); newsForeground=true;motion.active=true;motion.invalidate(); if(::connect.isInitialized)connect.setForegroundVisible(true); updateConnectionTimer(); if (ready) queryState(); refreshNews(true) }
+    override fun onResume() { super.onResume(); clearTraffic(); newsForeground=true;motion.active=true;motion.invalidate(); if(::connect.isInitialized)connect.setForegroundVisible(true); updateConnectionTimer(); if (ready && !attempting() && !drain) queryState(); refreshNews(true) }
     override fun onPause() { newsForeground=false;clearTraffic();motion.active=false;if(::connect.isInitialized)connect.setForegroundVisible(false);super.onPause() }
     private fun showDrawer() {
         drawer.visibility=View.VISIBLE
@@ -628,13 +656,14 @@ class MainActivity : ComponentActivity() {
         }else signOut()
     }
     override fun onDestroy() {
-        cancelUsagePoll();newsForeground=false;clearNews();if(::connect.isInitialized)connect.setForegroundVisible(false)
+        attemptJob?.cancel();attemptApi?.cancelPending();if(phase==Phase.START&&!running)stopPendingService();cancelUsagePoll();newsForeground=false;clearNews();if(::connect.isInitialized)connect.setForegroundVisible(false)
         if (pingRequest != null && !activeTunnelPing) MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
         timer.removeCallbacksAndMessages(null)
         MessageHelper.sendMsg2Service(this, AppConfig.MSG_UNREGISTER_CLIENT, "")
         unregisterReceiver(receiver); super.onDestroy()
     }
     private fun queryState() {
+        if(attempting())return
         val generation = ++stateQueryGeneration
         // With the daemon stopped there is no dynamic receiver to answer a normal broadcast.
         // The ordered broadcast reports this explicitly instead of waiting indefinitely.
@@ -706,19 +735,18 @@ class MainActivity : ComponentActivity() {
             if (pingRequest == id) {
                 pingRequest = null;quickMode=false
                 MessageHelper.sendMsg2TestService(this, TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
-                render(tr("مهلت تست پینگ پایان یافت.","Server test timed out."))
+                if(phase==Phase.QUICK)endAttempt(true,tr("مهلت یافتن سرور پایان یافت.","Server search timed out.")) else render(tr("مهلت تست پینگ پایان یافت.","Server test timed out."))
             }
         }, 120000)
     }
     private fun finishQuick(){
         quickMode=false
         val best=delays.entries.filter{it.value>0&&it.key in repo.servers}.minByOrNull{it.value}
-        if(best==null||account?.canConnect!=true||(account?.remainingSeconds()?:0)<=0){render(tr("هیچ سرور قابل اتصال پیدا نشد.","No reachable server found."));return}
+        if(phase!=Phase.QUICK)return
+        if(best==null||account?.canConnect!=true||(account?.remainingSeconds()?:0)<=0){endAttempt(true,tr("هیچ سرور قابل اتصال پیدا نشد.","No reachable server found."));return}
         MmkvManager.setSelectServer(best.key)
         serverSection.visibility=View.GONE
-        render(tr("سریع‌ترین سرور انتخاب شد.","Fastest server selected."))
-        val request=VpnService.prepare(this)
-        if(request==null)startTunnel() else permission.launch(request)
+        startTunnel()
     }
     private fun label(t: String, size: Int, color: Int, bold: Boolean = false) = TextView(this).apply {
         text = t; textSize = size.toFloat(); setTextColor(color)
@@ -740,15 +768,28 @@ class MainActivity : ComponentActivity() {
         dashboard.visibility = if (!starting && hasSub) View.VISIBLE else View.GONE
         if (starting) startupStatus.text = if (busy) tr("در حال ورود خودکار…","Signing in automatically…") else tr("در حال آماده‌سازی…","Preparing…")
         message?.let { status.text = it; loginStatus.text = it }
-        if (!transitioning && message == null && pingRequest==null) status.text = if(running)tr("اتصال برقرار است","Connected") else tr("برای اتصال لمس کنید","Tap to connect")
+        if (!transitioning && message == null && pingRequest==null && phase==Phase.IDLE) status.text = if(running)tr("اتصال برقرار است","Connected") else tr("برای اتصال لمس کنید","Tap to connect")
+        val pending=attempting()
+        val failed=phase==Phase.FAILED
+        val accent=when{running->Color.parseColor("#40F5A0");failed->Color.parseColor("#FF506C");else->Color.parseColor("#39DFFF")}
+        statePill.text=when{running->tr("✓ متصل شد","✓ Connected");phase==Phase.SWITCH->tr("آماده‌سازی VPN","Preparing VPN");phase==Phase.VERIFY->tr("در حال تأیید اعتبار","Validating subscription");phase==Phase.QUICK->tr("در حال یافتن سرور","Finding server");phase==Phase.START->tr("در حال اتصال به دلتا","Connecting to Delta");failed->tr("! اتصال ناموفق","! Connection failed");else->tr("قطع اتصال","Disconnected")}
+        statePill.background=shape(Color.argb(45,Color.red(accent),Color.green(accent),Color.blue(accent)),24,accent)
+        statePill.setTextColor(accent);statePill.setShadowLayer(dp(3).toFloat(),0f,0f,accent)
+        if(failed)status.text=failure
+        steps.visibility=if(pending||running)View.VISIBLE else View.GONE
+        steps.text=when{running->tr("✓ تأیید اعتبار   ›   ✓ اتصال به دلتا","✓ Verified   ›   ✓ Connected");phase==Phase.SWITCH->tr("◌ مجوز و تعویض VPN   ›   تأیید اعتبار","◌ VPN permission   ›   Verify");phase==Phase.VERIFY->tr("◌ تأیید اعتبار   ›   اتصال به دلتا","◌ Verify   ›   Connect");else->tr("✓ تأیید اعتبار   ›   ◌ اتصال به دلتا","✓ Verified   ›   ◌ Connect")}
+        actionButton.visibility=if(pending||running||failed)View.VISIBLE else View.GONE
+        actionButton.text=when{pending->tr("× لغو","× Cancel");running->tr("قطع اتصال","Disconnect");else->tr("↻ تلاش مجدد","↻ Retry")}
+        actionButton.background=shape(panel,24,accent)
         updateTraffic()
-        connect.setConnectionState(running,transitioning)
+        connect.setConnectionState(running,pending||transitioning,failed,phase==Phase.VERIFY)
         updateConnectionTimer()
-        connect.contentDescription = if (running) tr("قطع اتصال","Disconnect") else tr("اتصال","Connect")
-        connect.isEnabled = ready && stateKnown && !busy && !transitioning && (pingRequest == null || running) && (running || account?.canConnect == true || (account!=null && usageStale))
-        connect.alpha = if (connect.isEnabled || (account!=null && (busy || transitioning || pingRequest!=null))) 1f else 0.55f
-        status.setTextColor(if (running) green else muted)
-        val editable = ready && stateKnown && !busy && !transitioning && !running && pingRequest == null
+        connect.contentDescription=if(pending||running||failed)actionButton.text else tr("اتصال","Connect")
+        connect.isEnabled=pending||(ready&&stateKnown&&!permissionPending&&!drain&&!busy&&!transitioning&&(pingRequest==null||running)&&(running||account?.canConnect==true||(account!=null&&usageStale)))
+        actionButton.isEnabled=connect.isEnabled
+        connect.alpha=if(connect.isEnabled||(account!=null&&(busy||transitioning||pingRequest!=null)))1f else 0.55f
+        status.setTextColor(if(failed)red else if(running)green else muted)
+        val editable=ready&&stateKnown&&!permissionPending&&!drain&&!pending&&!busy&&!transitioning&&!running&&pingRequest==null
         val loginEditable = !busy && !running && !transitioning
         importButton.isEnabled = loginEditable; input.isEnabled = loginEditable; password.isEnabled = loginEditable
         clearButton.isEnabled = ready && stateKnown && !busy && !transitioning && pingRequest==null && account!=null
@@ -999,7 +1040,7 @@ class MainActivity : ComponentActivity() {
     }
     private fun updateConnectionTimer(){
         if(!::connectionTimer.isInitialized)return
-        val show=running && connectedSince>0L
+        val show=running && connectedSince>0L && !transitioning
         connectionTimer.visibility=if(show)View.VISIBLE else View.GONE
         if(!show)return
         val seconds=(SystemClock.elapsedRealtime()-connectedSince).coerceAtLeast(0L)/1000L
@@ -1014,12 +1055,15 @@ class MainActivity : ComponentActivity() {
             updateUsage()
             updateTraffic()
             val a = account
-            if (a != null && a.remainingSeconds() == 0L && (running || transitioning)) LauncherManager.stopService(this@MainActivity)
+            if(a!=null&&a.remainingSeconds()==0L){
+                if(attempting())endAttempt(true,tr("اعتبار اشتراک پایان یافته است.","Subscription expired."))
+                else if(running)LauncherManager.stopService(this@MainActivity)
+            }
             val now = android.os.SystemClock.elapsedRealtime()
             if(newsForeground&&account!=null&&now-newsLastPoll>=30000L)refreshNews()
             if(newsForeground&&account!=null&&drawer.visibility==View.VISIBLE)refreshAppUpdate()
             if (restoreRetryAt>0L && now>=restoreRetryAt && newsForeground && !busy && ready && stateKnown && account==null) maybeRestore(true)
-            if (ready && stateKnown && account != null && !busy && !transitioning && pingRequest==null && usagePoll?.isActive!=true && now-lastPoll>=30000L) {
+            if (ready && stateKnown && account != null && !attempting() && !drain && !busy && !transitioning && pingRequest==null && usagePoll?.isActive!=true && now-lastPoll>=30000L) {
                 lastPoll=now
                 pollUsage()
             }
@@ -1150,33 +1194,74 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    private fun validateAccount(connectAfter: Boolean,quickAfter:Boolean=false) {
-        val previous = account ?: return
-        if (busy || transitioning || pingRequest != null) return
-        if (running) { if (!connectAfter && !quickAfter) pollUsage(); return }
-        cancelUsagePoll()
-        busy = true; render(tr("در حال بررسی اعتبار حساب…","Checking subscription…"))
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { runCatching {
-                val updated = accountApi.session(previous.token, stableDeviceId())
-                updated to tryImport(updated)
-            } }
-            busy = false
-            result.onSuccess { (updated, imported) ->
+    private fun validateAccount(connectAfter:Boolean,quickAfter:Boolean=false){
+        if(!connectAfter&&!quickAfter){pollUsage();return}
+        if(account==null||busy||transitioning||running||attempting()||permissionPending||drain||pingRequest!=null)return
+        cancelUsagePoll();attemptId++;wantQuick=quickAfter;phase=Phase.SWITCH;failure="";stateQueryGeneration++
+        render(tr("در حال بررسی مجوز VPN و اتصال قبلی…","Checking VPN permission and previous connection…"))
+        try{
+            val request=VpnService.prepare(this)
+            if(request==null)verifyAttempt(attemptId)else{
+                permissionPending=true
+                render(tr("درخواست تعویض VPN؛ پیام اندروید را تأیید کنید.","Approve Android VPN replacement request."))
+                permission.launch(request)
+            }
+        }catch(_:Exception){permissionPending=false;endAttempt(true,tr("تعویض VPN ممکن نیست؛ تنظیمات VPN دائمی را بررسی کنید.","VPN replacement unavailable; check always-on VPN."))}
+    }
+    private fun verifyAttempt(id:Long){
+        val previous=account?:return endAttempt(true,tr("حساب در دسترس نیست.","Account unavailable."))
+        if(id!=attemptId||phase!=Phase.SWITCH)return
+        phase=Phase.VERIFY;busy=true
+        render(tr("در حال تأیید اعتبار اشتراک…","Validating subscription…"))
+        val api=DeltaAccountApi();attemptApi=api
+        attemptJob=lifecycleScope.launch{
+            val result=withContext(Dispatchers.IO){runCatching{
+                kotlinx.coroutines.delay(500)
+                currentCoroutineContext().ensureActive()
+                val updated=api.session(previous.token,stableDeviceId())
+                currentCoroutineContext().ensureActive()
+                val job=currentCoroutineContext()[Job]
+                val imported=synchronized(catalogLock){job?.ensureActive();tryImport(updated)}
+                updated to imported
+            }}
+            currentCoroutineContext().ensureActive()
+            if(id!=attemptId||phase!=Phase.VERIFY||account?.token!=previous.token)return@launch
+            attemptApi=null;attemptJob=null;busy=false
+            result.onSuccess{(updated,imported)->
                 account=updated;catalogPending=!imported;usageStale=false
-                if(!imported){render(catalogRetryMessage());return@onSuccess}
+                if(!updated.canConnect||updated.remainingSeconds()<=0L){endAttempt(true,tr("حجم یا اعتبار اشتراک کافی نیست.","Subscription expired or exhausted."));return@onSuccess}
+                if(!imported||!repo.canConnect()){endAttempt(true,catalogRetryMessage());return@onSuccess}
                 delays.clear()
-                render(if (!updated.canConnect || repo.servers.isEmpty()) tr("کانفیگ اختصاصی فعال در دسترس نیست.","No active dedicated server available.") else tr("اعتبار حساب تأیید شد.","Subscription verified."))
-                if(quickAfter && updated.canConnect && repo.servers.isNotEmpty())testServers(true)
-                else if (connectAfter && updated.canConnect && repo.canConnect()) {
-                    val request = VpnService.prepare(this@MainActivity)
-                    if (request == null) startTunnel() else permission.launch(request)
-                }
-            }.onFailure {
-                if (it is DeltaApiException && it.sessionRevoked) invalidateSession()
-                else {catalogPending=true;usageStale=true;render(catalogRetryMessage())}
+                if(wantQuick){phase=Phase.QUICK;testServers(true)}else startTunnel()
+            }.onFailure{
+                if(it is DeltaApiException&&it.sessionRevoked){phase=Phase.IDLE;invalidateSession()}
+                else{catalogPending=true;usageStale=true;endAttempt(true,tr("تأیید اعتبار ناموفق بود؛ اینترنت و تنظیمات VPN دائمی را بررسی کنید.","Verification failed; check internet and always-on VPN settings."))}
             }
         }
+    }
+    private fun stopPendingService(){
+        LauncherManager.stopService(this)
+        runCatching{stopService(Intent(this,com.v2ray.ang.service.CoreVpnService::class.java))}
+    }
+    private fun endAttempt(failed:Boolean,message:String){
+        val wasStarting=phase==Phase.START
+        attemptId++;attemptJob?.cancel();attemptJob=null;attemptApi?.cancelPending();attemptApi=null
+        if(phase==Phase.VERIFY)busy=false
+        if(phase==Phase.QUICK&&pingRequest!=null){
+            pingRequest=null;quickMode=false
+            MessageHelper.sendMsg2TestService(this,TestServiceMessage(AppConfig.MSG_MEASURE_CONFIG_CANCEL))
+        }
+        timer.removeCallbacks(timeout);transitioning=false
+        phase=if(failed)Phase.FAILED else Phase.IDLE
+        failure=if(failed)message else ""
+        if(wasStarting){
+            drain=true;stateQueryGeneration++;stopPendingService()
+            timer.postDelayed({
+                stopPendingService()
+                timer.postDelayed({drain=false;queryState();render(message)},500)
+            },1200)
+        }
+        render(message)
     }
     private fun signOut() {
         if (busy || running || transitioning || pingRequest != null) return
@@ -1188,7 +1273,8 @@ class MainActivity : ComponentActivity() {
         if (previous != null) lifecycleScope.launch(Dispatchers.IO) { runCatching { accountApi.logout(previous.token) } }
     }
     private fun toggle() {
-        if (busy || transitioning || (pingRequest!=null && !running)) return
+        if(attempting()){endAttempt(false,tr("درخواست اتصال لغو شد.","Connection cancelled."));return}
+        if(permissionPending||drain||busy||transitioning||(pingRequest!=null&&!running))return
         cancelUsagePoll()
         if (running) {
             if(activeTunnelPing){pingRequest=null;activeTunnelPing=false;activePingGuid=null}
@@ -1199,13 +1285,14 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun startTunnel() {
-        if (account?.canConnect != true || (account?.remainingSeconds() ?: 0) <= 0 || !repo.canConnect()) return
+        if(!attempting())return
+        if(account?.canConnect!=true||(account?.remainingSeconds()?:0)<=0||!repo.canConnect()){endAttempt(true,tr("اشتراک یا سرور قابل اتصال نیست.","Subscription or server unavailable."));return}
+        if(runCatching{VpnService.prepare(this)==null}.getOrDefault(false).not()){endAttempt(true,tr("مجوز VPN تغییر کرده است؛ دوباره تلاش کنید.","VPN permission changed; retry."));return}
         cancelUsagePoll()
-        MmkvManager.encodeSettings(AppConfig.PREF_MODE, AppConfig.VPN)
-        transitioning = true; render(tr("در حال برقراری اتصال…","Connecting…"))
-        if (!LauncherManager.startServiceFromToggle(this, account?.deadlineElapsed ?: 0L, account?.token.orEmpty())) {
-            transitioning = false; render(tr("شروع سرویس ناموفق بود.","VPN service could not start."))
-        } else timer.postDelayed(timeout, 20000)
+        MmkvManager.encodeSettings(AppConfig.PREF_MODE,AppConfig.VPN)
+        phase=Phase.START;transitioning=true;render(tr("در حال برقراری اتصال…","Connecting…"))
+        if(!LauncherManager.startServiceFromToggle(this,account?.deadlineElapsed?:0L,account?.token.orEmpty()))endAttempt(true,tr("شروع سرویس ناموفق بود.","VPN service could not start."))
+        else timer.postDelayed(timeout,20000)
     }
 }
 

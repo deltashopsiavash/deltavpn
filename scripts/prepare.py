@@ -305,7 +305,7 @@ for old,new in [
             if (left <= 0L) stopAllService() else deltaHandler.postDelayed(this, minOf(1000L,left))
         }
     }"""),
-    ("super.onDestroy()", "deltaGeneration++\n        deltaHandler.removeCallbacksAndMessages(null)\n        deltaExecutor.shutdownNow()\n        super.onDestroy()"),
+    ("super.onDestroy()", "if (isRunning) stopAllService()\n        deltaGeneration++\n        deltaHandler.removeCallbacksAndMessages(null)\n        deltaExecutor.shutdownNow()\n        super.onDestroy()"),
     ("NotificationManager.ensureForeground()", """NotificationManager.ensureForeground()
         val deadline = intent?.getLongExtra("deltaDeadline",0L) ?: 0L
         if (deadline <= android.os.SystemClock.elapsedRealtime()) {
@@ -332,8 +332,8 @@ gradle = app / "build.gradle.kts"
 s = gradle.read_text()
 for old, new in [
     ('applicationId = "com.v2ray.ang"', 'applicationId = "com.delta.vpn"'),
-    ('versionCode = 755', 'versionCode = 28'),
-    ('versionName = "2.3.15"', 'versionName = "1.8.1"'),
+    ('versionCode = 755', 'versionCode = 29'),
+    ('versionName = "2.3.15"', 'versionName = "1.8.2"'),
     ('applicationIdSuffix = ".fdroid"', ''),
 ]:
     assert old in s, old

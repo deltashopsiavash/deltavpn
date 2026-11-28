@@ -25,6 +25,7 @@ class DeltaApiException(val status: Int, val reason: String = ""): Exception() {
 class DeltaAccountApi {
     private val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .proxy(Proxy.NO_PROXY).connectTimeout(15, TimeUnit.SECONDS).callTimeout(30, TimeUnit.SECONDS).build()
+    fun cancelPending(){client.dispatcher.cancelAll()}
     private fun call(json: JsonObject): JsonObject {
         val endpoint = DeltaEndpoint.URL
         val uri = URI(endpoint)
